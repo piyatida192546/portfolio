@@ -1,0 +1,1494 @@
+<!DOCTYPE html>
+<html lang="th">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Sales Performance Dashboard — Hexa Ceram (mockup)</title>
+<!--
+  Standalone static mockup of a "Sales Performance Dashboard" for a web app.
+
+  - Layout follows ตัวอย่าง.png (KPI row, Trend+Forecast, Product Group, Channel
+    donut, Weekly forecast, Site table, Top 10 Customers, Forecast Summary).
+  - Styling follows design-system.md (Hexa Ceram Report Center tokens): Sarabun +
+    Inter, primary blue --p-800, 12px card radius, blue-tinted shadows, SVG line
+    icons only, stable categorical chart palette.
+  - Code structure mirrors ตัวอย่าง.html: a synthetic "cube" (TXN_ROWS +
+    TARGET_ROWS) that compute() re-aggregates on every filter change, so the
+    charts/tables genuinely react to the filters — not a static screenshot.
+  - "Top 10 Product" is replaced with "Top 10 Customers" (same table style,
+    Product Name -> Customer Name).
+
+  Data source: starts on generated mock data. You can Import a SQLite (.sqlite/
+  .db) file to replace it, and Download the current data back out as SQLite.
+  SQLite in the browser is handled by sql.js (SQLite compiled to WASM), loaded
+  lazily from CDN on first Import/Download. No backend / server.
+-->
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Sarabun:wght@400;500;600;700;800&family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.4/dist/chart.umd.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/sql.js/1.10.2/sql-wasm.js"></script>
+<style>
+  :root{
+    --p-900:#084777; --p-800:#0b518e; --p-700:#1d6fb8; --p-600:#3d8ed8;
+    --p-500:#79b4ea; --p-400:#a9d1f3; --p-300:#d5eaf9; --p-200:#e2f0fb;
+    --p-100:#eef7fd; --p-50:#f7fbfe;
+    --gold-700:#9f7a24; --gold-600:#c8a24a; --gold-300:#e8d6a7; --gold-100:#fbf7ed;
+    --success:#16a34a; --success-bg:#dcfce7; --warning:#f59e0b; --warning-bg:#fef3c7;
+    --error:#dc2626; --error-bg:#fee2e2; --info:#0284c7; --info-bg:#dbeafe;
+    --page-bg:#f6f8fb; --surface:#ffffff; --field-bg:#f0f3f7;
+    --border:#dde5ed; --border-soft:#e9eef4;
+    --text-900:#1e293b; --text-600:#64748b; --text-400:#a0aec0;
+    --radius-sm:6px; --radius-md:8px; --radius-lg:12px;
+    --shadow-sm:0 1px 3px rgba(11,81,142,.08);
+    --shadow-md:0 8px 24px rgba(11,81,142,.1);
+    --shadow-lg:0 24px 48px rgba(11,81,142,.14);
+    --font-body:'Sarabun',sans-serif; --font-ui:'Inter',sans-serif;
+  }
+  *{box-sizing:border-box;}
+  html,body{margin:0;padding:0;min-height:100%;}
+  body{font-family:var(--font-body);color:var(--text-900);background:var(--page-bg);-webkit-font-smoothing:antialiased;}
+  h1,h2{font-family:var(--font-body);}
+  a{text-decoration:none;color:inherit;}
+  button,input,select{font-family:inherit;}
+  button{cursor:pointer;}
+  svg{display:block;}
+
+  .wrap{max-width:1600px;margin:0 auto;padding:22px 26px 56px;}
+
+  /* ---------------------- header ---------------------- */
+  .header{display:flex;align-items:flex-start;justify-content:space-between;gap:18px;flex-wrap:wrap;margin-bottom:16px;}
+  .brand{display:flex;align-items:flex-start;gap:12px;}
+  .brand .logo-dot{width:40px;height:40px;border-radius:10px;background:var(--p-800);color:#fff;display:flex;align-items:center;justify-content:center;flex-shrink:0;}
+  .brand .logo-dot svg{width:22px;height:22px;}
+  .header h1{font-size:21px;font-weight:700;margin:0 0 4px;display:flex;align-items:center;gap:10px;flex-wrap:wrap;}
+  .header p{font-size:12.5px;color:var(--text-400);margin:0;max-width:640px;}
+  .mock-badge{display:inline-flex;align-items:center;gap:5px;padding:2px 9px;border-radius:20px;background:var(--gold-100);border:1px solid var(--gold-300);color:var(--gold-700);font-family:var(--font-ui);font-size:10px;font-weight:700;letter-spacing:.03em;text-transform:uppercase;}
+  .mock-badge.is-live{background:var(--success-bg);border-color:#bbf7d0;color:#15803d;}
+  .header-right{display:flex;align-items:center;gap:14px;flex-shrink:0;flex-wrap:wrap;}
+  .as-of{font-family:var(--font-ui);font-size:11px;color:var(--text-400);white-space:nowrap;}
+  .btn-dark{display:flex;align-items:center;gap:7px;border-radius:9px;padding:0 16px;height:40px;font-size:13px;font-weight:700;background:var(--p-800);color:#fff;border:1px solid var(--p-800);box-shadow:var(--shadow-sm);}
+  .btn-dark:hover{background:var(--p-900);}
+  .btn-dark svg{width:14px;height:14px;}
+
+  /* ---------------------- filter toolbar ---------------------- */
+  .toolbar{display:flex;gap:10px;align-items:flex-end;flex-wrap:wrap;margin-bottom:12px;}
+  .filter-field{background:var(--surface);border:1px solid var(--border);border-radius:9px;padding:5px 10px;min-width:132px;box-shadow:var(--shadow-sm);position:relative;}
+  .filter-field.wide{min-width:190px;}
+  .filter-field > label{display:flex;align-items:center;gap:5px;font-size:10.5px;color:var(--text-400);font-family:var(--font-ui);font-weight:600;}
+  .filter-field > label svg{width:11px;height:11px;}
+  .summary-btn{display:flex;align-items:center;justify-content:space-between;gap:6px;width:100%;border:none;background:transparent;padding:0;margin-top:2px;font-family:var(--font-ui);font-size:13px;font-weight:600;color:var(--text-900);}
+  .summary-btn svg{width:12px;height:12px;flex-shrink:0;color:var(--text-400);}
+  .summary-text{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
+  .popover{position:absolute;top:calc(100% + 6px);left:0;z-index:30;min-width:200px;max-width:280px;background:var(--surface);border:1px solid var(--border);border-radius:10px;box-shadow:var(--shadow-lg);padding:6px;display:none;flex-direction:column;gap:2px;}
+  .popover.open{display:flex;}
+  .popover .search{border:1px solid var(--border);border-radius:7px;padding:5px 8px;font-size:12.5px;font-family:var(--font-ui);color:var(--text-900);background:var(--field-bg);margin-bottom:4px;}
+  .option-list{max-height:240px;overflow-y:auto;display:flex;flex-direction:column;gap:1px;}
+  .option-row{display:flex;align-items:center;gap:8px;padding:6px 7px;border-radius:6px;font-size:12.5px;color:var(--text-600);cursor:pointer;}
+  .option-row:hover{background:var(--field-bg);}
+  .option-row.selected{color:var(--p-800);font-weight:700;}
+  .option-row input{flex-shrink:0;}
+  .empty-state{padding:8px 6px;font-size:12px;color:var(--text-400);text-align:center;}
+
+  /* Date Range picker (real start–end day-level inputs) */
+  .daterange-field{min-width:270px;}
+  .daterange{display:flex;align-items:center;gap:6px;margin-top:3px;}
+  .daterange input[type=date]{font-family:var(--font-ui);font-size:12.5px;font-weight:600;color:var(--text-900);background:var(--field-bg);border:1px solid var(--border);border-radius:7px;padding:4px 7px;line-height:1.2;}
+  .daterange input[type=date]:focus{outline:none;border-color:var(--p-400);box-shadow:0 0 0 3px var(--p-100);}
+  .daterange .dr-sep{color:var(--text-400);font-weight:700;}
+
+  .reset-btn{display:flex;align-items:center;gap:6px;border-radius:9px;padding:0 14px;font-size:13px;font-weight:600;height:40px;box-shadow:var(--shadow-sm);background:var(--surface);border:1px solid var(--border);color:var(--text-900);}
+  .reset-btn:hover{background:var(--p-50);}
+  .reset-btn svg{width:13px;height:13px;}
+
+  /* ---------------------- data source (SQLite) controls ---------------------- */
+  .data-source{display:flex;align-items:center;gap:9px;flex-wrap:wrap;margin-bottom:18px;}
+  .data-status{font-family:var(--font-ui);font-size:11px;font-weight:600;color:var(--text-600);padding:5px 11px;border-radius:20px;background:var(--field-bg);white-space:nowrap;}
+  .data-status.ok{background:var(--success-bg);color:#15803d;}
+  .data-status.error{background:var(--error-bg);color:var(--error);}
+  .data-status.busy{background:var(--info-bg);color:var(--info);}
+  .ds-btn{display:flex;align-items:center;gap:6px;border-radius:9px;padding:0 13px;height:34px;font-family:var(--font-ui);font-size:12px;font-weight:700;background:var(--surface);border:1px solid var(--border);color:var(--p-800);box-shadow:var(--shadow-sm);}
+  .ds-btn:hover{background:var(--p-50);border-color:var(--p-300);}
+  .ds-btn.primary{background:var(--p-800);border-color:var(--p-800);color:#fff;}
+  .ds-btn.primary:hover{background:var(--p-900);}
+  .ds-btn svg{width:13px;height:13px;flex-shrink:0;}
+
+  /* ---------------------- KPI row ---------------------- */
+  .kpis{display:grid;grid-template-columns:repeat(5,1fr);gap:12px;margin-bottom:14px;}
+  @media (max-width:1200px){.kpis{grid-template-columns:repeat(2,1fr);}}
+  .kpi{background:var(--surface);border:1px solid var(--border);border-radius:var(--radius-lg);box-shadow:var(--shadow-sm);padding:15px 15px;display:flex;align-items:flex-start;gap:13px;min-width:0;transition:box-shadow .18s,transform .18s,border-color .18s;}
+  .kpi:hover{border-color:var(--p-300);box-shadow:var(--shadow-md);transform:translateY(-3px);}
+  .kpi.tint-blue{background:#eef5fd;} .kpi.tint-teal{background:#effcf9;}
+  .kpi.tint-purple{background:#f4f2fe;} .kpi.tint-sky{background:#eef7ff;}
+  .kpi.kpi-primary{background:var(--p-800);border-color:var(--p-800);}
+  .kpi.kpi-primary .kpi-label,.kpi.kpi-primary .kpi-value,.kpi.kpi-primary .kpi-sub{color:#fff;}
+  .kpi.kpi-primary .kpi-sub b{color:#fff;}
+  .kpi.kpi-primary .delta.up{color:#6ee7b7;} .kpi.kpi-primary .delta.down{color:#fca5a5;}
+  .kpi.kpi-primary .kpi-icon{background:rgba(255,255,255,.16);}
+  .kpi-icon{width:42px;height:42px;min-width:42px;border-radius:50%;display:flex;align-items:center;justify-content:center;color:#fff;}
+  .kpi-icon svg{width:20px;height:20px;}
+  .ic-blue{background:#2f80ed;} .ic-teal{background:#3fa6ae;} .ic-purple{background:#7c6fe0;} .ic-sky{background:#3b7de8;} .ic-green{background:#2fa360;}
+  .kpi-texts{min-width:0;flex:1;}
+  .kpi-label{font-size:12px;color:var(--text-600);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
+  .kpi-value{font-size:21px;font-weight:800;color:var(--text-900);line-height:1.35;white-space:nowrap;}
+  .kpi-sub{font-size:11.5px;color:var(--text-400);display:flex;align-items:center;gap:6px;flex-wrap:wrap;margin-top:2px;}
+  .kpi-sub b{font-family:var(--font-ui);font-weight:700;color:var(--text-600);}
+  .delta{font-family:var(--font-ui);font-size:11.5px;font-weight:700;display:inline-flex;align-items:center;gap:3px;white-space:nowrap;}
+  .delta.up{color:var(--success);} .delta.down{color:var(--error);} .delta.flat{color:var(--text-400);}
+
+  /* ---------------------- panels / layout ---------------------- */
+  .row{display:grid;gap:14px;margin-bottom:14px;align-items:stretch;}
+  .row.hero{grid-template-columns:1fr;}
+  .row.two{grid-template-columns:1fr 1fr;}
+  .row.area-cust{grid-template-columns:1fr 1.28fr;}
+  @media (max-width:1180px){.row.two,.row.area-cust{grid-template-columns:1fr;}}
+
+  .panel{background:var(--surface);border:1px solid var(--border);border-radius:var(--radius-lg);box-shadow:var(--shadow-sm);padding:14px 16px;width:100%;min-width:0;position:relative;display:flex;flex-direction:column;}
+  .panel-head{display:flex;align-items:flex-start;justify-content:space-between;gap:10px;margin-bottom:8px;}
+  .panel h2{margin:0;font-size:12.5px;font-weight:800;color:var(--p-900);letter-spacing:.2px;text-transform:uppercase;font-family:var(--font-ui);line-height:1.35;}
+  .panel h2 span{font-weight:500;text-transform:none;color:var(--text-400);font-size:11.5px;}
+  .panel-content{display:flex;flex-direction:column;flex:1 1 auto;min-height:0;}
+  .head-tools{display:flex;align-items:center;gap:8px;flex-shrink:0;}
+  .chart-toolbar{display:flex;align-items:center;gap:8px 10px;flex-wrap:wrap;margin-bottom:8px;}
+  .seg{display:flex;gap:2px;background:var(--field-bg);border:1px solid var(--border);border-radius:20px;padding:3px;}
+  .seg button{border:none;background:none;font-family:var(--font-ui);font-size:11px;font-weight:700;padding:5px 11px;border-radius:16px;color:var(--text-600);white-space:nowrap;}
+  .seg button.active{background:var(--p-800);color:#fff;}
+  .expand-btn{display:flex;align-items:center;justify-content:center;width:26px;height:26px;flex-shrink:0;border-radius:6px;border:1px solid var(--border);background:var(--surface);color:var(--text-400);}
+  .expand-btn:hover{color:var(--p-700);border-color:var(--p-300);background:var(--p-50);}
+  .expand-btn svg{width:14px;height:14px;}
+
+  .legend-row{display:flex;align-items:center;gap:8px 14px;font-size:11px;color:var(--text-600);margin:0 0 8px;flex-wrap:wrap;font-family:var(--font-ui);}
+  .legend-row .k{display:inline-flex;align-items:center;gap:5px;}
+  .legend-row .muted{color:var(--text-400);}
+  .swatch{width:11px;height:11px;border-radius:3px;display:inline-block;flex-shrink:0;}
+  .swatch.line{height:3px;border-radius:2px;width:14px;}
+  .dot{width:9px;height:9px;border-radius:50%;display:inline-block;flex-shrink:0;}
+  .chart-wrap{position:relative;height:262px;flex:1 1 auto;min-height:240px;}
+  .chart-wrap.hero{height:312px;}
+  .chart-wrap.bu{height:288px;}
+  .chart-wrap canvas{width:100%!important;height:100%!important;}
+  .note{margin-top:8px;font-size:10.5px;color:var(--text-400);line-height:1.5;}
+  .note b{color:var(--text-600);font-weight:700;}
+
+  /* data tables (Top 10 Customers) */
+  .cust-filter{display:flex;align-items:center;gap:8px;margin-bottom:10px;flex-wrap:wrap;}
+  .cust-filter label{font-family:var(--font-ui);font-size:10px;font-weight:700;color:var(--text-400);text-transform:uppercase;letter-spacing:.03em;}
+  .cust-filter select{font-family:var(--font-ui);font-size:12px;font-weight:600;color:var(--text-900);background:var(--field-bg);border:1px solid var(--border);border-radius:8px;padding:5px 9px;}
+  .cust-filter .hint{font-size:10.5px;color:var(--text-400);}
+  .table-scroll{overflow-x:auto;flex:1 1 auto;}
+  .dtable{width:100%;border-collapse:collapse;font-size:12px;}
+  .dtable th{font-family:var(--font-ui);font-size:9.5px;font-weight:600;color:var(--text-400);text-transform:uppercase;letter-spacing:.03em;padding:7px 8px;text-align:right;border-bottom:1px solid var(--border);white-space:nowrap;}
+  .dtable th:first-child,.dtable th.l{text-align:left;}
+  .dtable td{padding:8px 8px;border-bottom:1px solid var(--border-soft);text-align:right;white-space:nowrap;color:var(--text-900);}
+  .dtable td:first-child,.dtable td.l{text-align:left;}
+  .dtable tr:last-child td{border-bottom:none;}
+  .dtable .rank{font-family:var(--font-ui);font-weight:800;color:var(--text-400);width:24px;}
+  .dtable .name{font-weight:600;}
+  .dtable .num{font-family:var(--font-ui);font-weight:700;}
+  .dtable .g{color:var(--success);font-family:var(--font-ui);font-weight:800;}
+  .dtable .r{color:var(--error);font-family:var(--font-ui);font-weight:800;}
+  .dtable .chtag{font-family:var(--font-ui);font-size:8.5px;font-weight:700;color:var(--text-400);border:1px solid var(--border);border-radius:4px;padding:0 4px;margin-left:6px;vertical-align:1px;text-transform:none;letter-spacing:0;}
+
+  /* Forecast Summary */
+  .fc-panel{background:#f2f9f5;border:1px solid #d6ebe0;border-radius:var(--radius-lg);box-shadow:var(--shadow-sm);padding:14px 16px;}
+  .fc-head{display:flex;align-items:center;gap:8px;margin-bottom:6px;}
+  .fc-head .badge{width:26px;height:26px;border-radius:50%;background:var(--success);color:#fff;display:flex;align-items:center;justify-content:center;}
+  .fc-head .badge svg{width:15px;height:15px;}
+  .fc-head h2{margin:0;font-size:12.5px;font-weight:800;color:#15803d;letter-spacing:.2px;text-transform:uppercase;font-family:var(--font-ui);}
+  .fc-caption{font-size:11px;color:var(--text-600);margin:0 0 12px;line-height:1.6;}
+  .fc-caption b{font-family:var(--font-ui);font-weight:700;color:var(--text-900);}
+  .fc-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:12px;}
+  @media (max-width:900px){.fc-grid{grid-template-columns:1fr;}}
+  .fc-card{background:var(--surface);border:1px solid var(--border);border-radius:10px;padding:13px 15px;}
+  .fc-card .t{display:flex;align-items:center;gap:6px;font-family:var(--font-ui);font-size:11px;font-weight:700;color:var(--text-600);margin-bottom:10px;}
+  .fc-card .t svg{width:12px;height:12px;color:var(--text-400);flex-shrink:0;}
+  .fc-nums{display:flex;gap:16px;margin-bottom:11px;flex-wrap:wrap;}
+  .fc-nums .b{font-family:var(--font-ui);font-size:9px;font-weight:700;color:var(--text-400);text-transform:uppercase;letter-spacing:.03em;margin-bottom:1px;}
+  .fc-nums .v{font-family:var(--font-ui);font-size:15px;font-weight:800;color:var(--text-900);white-space:nowrap;}
+  .fc-nums .v.fore{color:var(--p-700);}
+  .fc-metric{border-top:1px dashed var(--border);padding-top:10px;}
+  .fc-metric .mrow{display:flex;align-items:center;justify-content:space-between;gap:8px;font-size:10.5px;margin-bottom:5px;}
+  .fc-metric .mrow:last-child{margin-bottom:0;}
+  .fc-metric .lbl{color:var(--text-600);display:flex;align-items:center;gap:4px;}
+  .fc-metric .val{font-family:var(--font-ui);font-weight:800;white-space:nowrap;}
+  .fc-metric .val.g{color:var(--success);} .fc-metric .val.r{color:var(--error);}
+  .fc-prog{height:5px;background:var(--field-bg);border-radius:5px;overflow:hidden;margin:2px 0 9px;}
+  .fc-prog > span{display:block;height:100%;background:var(--success);border-radius:5px;}
+  .qm{width:13px;height:13px;border-radius:50%;background:var(--field-bg);color:var(--text-600);font-size:8px;font-weight:800;display:inline-flex;align-items:center;justify-content:center;cursor:help;flex-shrink:0;font-family:var(--font-ui);border:1px solid var(--border);}
+
+  .content-loading{opacity:.5;transition:opacity .18s;pointer-events:none;}
+
+  /* fullscreen */
+  .fs-backdrop{position:fixed;inset:0;background:rgba(20,26,32,.45);display:none;align-items:center;justify-content:center;z-index:90;padding:16px;}
+  .fs-backdrop.open{display:flex;}
+  .fs-panel{width:96vw;max-width:1320px;height:92vh;background:var(--surface);border-radius:18px;display:flex;flex-direction:column;box-shadow:var(--shadow-lg);overflow:hidden;}
+  .fs-head{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:16px 20px;border-bottom:1px solid var(--border);flex-shrink:0;}
+  .fs-head h2{margin:0;font-size:14px;font-weight:800;color:var(--p-900);text-transform:uppercase;letter-spacing:.2px;font-family:var(--font-ui);}
+  .fs-close{width:30px;height:30px;border-radius:8px;border:1px solid var(--border);background:var(--surface);color:var(--text-600);display:flex;align-items:center;justify-content:center;}
+  .fs-close svg{width:16px;height:16px;}
+  .fs-body{padding:20px 22px;overflow:auto;flex:1;min-height:0;display:flex;flex-direction:column;}
+  .fs-body .chart-wrap,.fs-body .chart-wrap.hero,.fs-body .chart-wrap.bu{flex:1 1 auto;height:auto;min-height:64vh;}
+  .fs-body .chart-toolbar{margin-bottom:12px;}
+  .fs-body .legend-row{font-size:12.5px;margin-bottom:12px;}
+  .fs-body .note{font-size:12px;margin-top:12px;}
+  .fs-body .dtable{font-size:13.5px;}
+  .fs-body .dtable th{font-size:11px;padding:9px 12px;}
+  .fs-body .dtable td{padding:11px 12px;}
+  .fs-body .cust-filter{margin-bottom:14px;}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <div class="header">
+    <div class="brand">
+      <div class="logo-dot">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><path d="M3 3v18h18"/><path d="M7 14l3-4 3 3 4-6"/></svg>
+      </div>
+      <div>
+        <h1>Sales Performance Dashboard <span class="mock-badge" id="mockBadge">Sample data · mockup</span></h1>
+        <p>ภาพรวมยอดขาย เทียบเป้า รายเดือน / รายสัปดาห์ พร้อม Forecast</p>
+      </div>
+    </div>
+    <div class="header-right">
+      <span class="as-of" id="asOf">Data as of: —</span>
+      <button class="btn-dark" id="exportBtn">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><path d="M12 3v12m0 0l-4-4m4 4l4-4M4 17v2a2 2 0 002 2h12a2 2 0 002-2v-2"/></svg>
+        Export
+      </button>
+    </div>
+  </div>
+
+  <div class="toolbar" id="toolbar">
+    <div class="filter-field daterange-field" data-key="range">
+      <label><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="4" width="18" height="17" rx="2"/><path d="M3 9h18M8 2v4M16 2v4"/></svg> Date Range</label>
+      <div class="daterange">
+        <input type="date" id="dateStart" aria-label="วันเริ่มต้น">
+        <span class="dr-sep">–</span>
+        <input type="date" id="dateEnd" aria-label="วันสิ้นสุด">
+      </div>
+    </div>
+    <div class="filter-field" data-key="site"><label>Site</label></div>
+    <div class="filter-field" data-key="bu"><label>Business Unit</label></div>
+    <div class="filter-field" data-key="ae"><label>AE</label></div>
+    <div class="filter-field" data-key="province"><label>Province</label></div>
+    <button class="reset-btn" id="resetBtn">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><path d="M3 12a9 9 0 109-9 9.75 9.75 0 00-6.74 2.74L3 8"/><path d="M3 3v5h5"/></svg>
+      Reset Filters
+    </button>
+  </div>
+
+  <div class="data-source">
+    <span class="data-status" id="dataStatus">Using sample mock data</span>
+    <button class="ds-btn" id="importBtn">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><path d="M12 15V3m0 0L8 7m4-4l4 4M4 15v4a2 2 0 002 2h12a2 2 0 002-2v-4"/></svg>
+      Import SQLite
+    </button>
+    <button class="ds-btn primary" id="downloadBtn">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><path d="M12 3v12m0 0l-4-4m4 4l4-4M4 15v4a2 2 0 002 2h12a2 2 0 002-2v-4"/></svg>
+      Download SQLite
+    </button>
+    <input type="file" id="sqliteInput" accept=".sqlite,.db,.sqlite3,application/x-sqlite3" hidden>
+  </div>
+
+  <div id="dashboardBody">
+    <div class="kpis" id="kpiRow"></div>
+
+    <!-- Row 1 (full width): Sales Trend & Forecast -->
+    <div class="row hero">
+      <div class="panel" data-fs-title="Sales Trend & Forecast (Monthly)">
+        <div class="panel-head">
+          <h2>Sales Trend &amp; Forecast <span>(Monthly)</span></h2>
+          <button class="expand-btn" data-expand aria-label="ขยายกราฟ"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><path d="M15 3h6v6M9 21H3v-6M21 3l-7 7M3 21l7-7"/></svg></button>
+        </div>
+        <div class="panel-content">
+          <div class="chart-toolbar">
+            <div class="seg" id="trendSeg">
+              <button type="button" data-v="actual" class="active">Actual Sales</button>
+              <button type="button" data-v="forecast">Forecast</button>
+            </div>
+          </div>
+          <div class="legend-row" id="trendLegend"></div>
+          <div class="chart-wrap hero"><canvas id="trendChart"></canvas></div>
+          <div class="note" id="trendNote"></div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Row 2: Sales by Business Unit | Sales YoY Growth -->
+    <div class="row two">
+      <div class="panel" data-fs-title="Sales by Business Unit (2025 vs 2026)">
+        <div class="panel-head">
+          <h2>Sales by Business Unit <span>(2025 vs 2026)</span></h2>
+          <button class="expand-btn" data-expand aria-label="ขยายกราฟ"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><path d="M15 3h6v6M9 21H3v-6M21 3l-7 7M3 21l7-7"/></svg></button>
+        </div>
+        <div class="panel-content">
+          <div class="legend-row" id="buLegend"></div>
+          <div class="chart-wrap bu"><canvas id="buChart"></canvas></div>
+          <div class="note">แต่ละ Business Unit มี 2 แท่ง (บน = 2025, ล่าง = 2026) · <b>%G</b> = อัตราเติบโตเทียบปีก่อน (2026 เทียบ 2025)</div>
+        </div>
+      </div>
+
+      <div class="panel" data-fs-title="Sales YoY Growth (%)">
+        <div class="panel-head">
+          <h2>Sales YoY Growth <span>(% เทียบปีก่อน)</span></h2>
+          <button class="expand-btn" data-expand aria-label="ขยายกราฟ"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><path d="M15 3h6v6M9 21H3v-6M21 3l-7 7M3 21l7-7"/></svg></button>
+        </div>
+        <div class="panel-content">
+          <div class="chart-toolbar">
+            <div class="seg" id="growthSeg">
+              <button type="button" data-v="m" class="active">YoY (M)</button>
+              <button type="button" data-v="q">YoY (Q)</button>
+            </div>
+          </div>
+          <div class="legend-row" id="growthLegend"></div>
+          <div class="chart-wrap"><canvas id="growthChart"></canvas></div>
+          <div class="note" id="growthNote"></div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Row 3: Sales Trend (Area) | Top 10 Customers -->
+    <div class="row area-cust">
+      <div class="panel" data-fs-title="Sales Trend (รายเดือน · เทียบปี)">
+        <div class="panel-head">
+          <h2>Sales Trend <span>(รายเดือน · เทียบปี)</span></h2>
+          <button class="expand-btn" data-expand aria-label="ขยายกราฟ"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><path d="M15 3h6v6M9 21H3v-6M21 3l-7 7M3 21l7-7"/></svg></button>
+        </div>
+        <div class="panel-content">
+          <div class="legend-row" id="areaLegend"></div>
+          <div class="chart-wrap"><canvas id="areaChart"></canvas></div>
+          <div class="note">พื้นที่ใต้เส้นแยกสีตามปี · แกน Y = ยอดขาย · แกน X = เดือน · เส้นปี 2026 แสดงถึงเดือนที่มีข้อมูลจริงเท่านั้น</div>
+        </div>
+      </div>
+
+      <div class="panel" data-fs-title="Top 10 Customers">
+        <div class="panel-head">
+          <h2>Top 10 Customers <span id="custSub">(อันดับตามยอด 2026)</span></h2>
+          <button class="expand-btn" data-expand aria-label="ขยายตาราง"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><path d="M15 3h6v6M9 21H3v-6M21 3l-7 7M3 21l7-7"/></svg></button>
+        </div>
+        <div class="panel-content">
+          <div class="cust-filter">
+            <label for="custChannel">Filter by Channel</label>
+            <select id="custChannel">
+              <option value="">All Channels</option>
+              <option value="Hospital">Hospital</option>
+              <option value="Clinic">Clinic</option>
+              <option value="Distributor">Distributor</option>
+              <option value="Others">Others</option>
+            </select>
+            <span class="hint" id="custHint"></span>
+          </div>
+          <div class="table-scroll"><div id="custTable"></div></div>
+          <div class="note">เลือก Channel → กรองลูกค้าเฉพาะ Channel นั้นก่อน แล้วจัดอันดับ Top 10 ใหม่จากยอดขายปี 2026 · <b>All</b> = Top 10 จากลูกค้าทุก Channel · ตัวเลขเป็นยอดสะสม YTD (ม.ค.–เดือนล่าสุด) เทียบช่วงเดียวกันปีก่อน</div>
+        </div>
+      </div>
+    </div>
+
+    <div class="fc-panel">
+      <div class="fc-head">
+        <span class="badge"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><path d="M23 6l-9.5 9.5-5-5L1 18"/><path d="M17 6h6v6"/></svg></span>
+        <h2>Forecast Summary</h2>
+      </div>
+      <p class="fc-caption" id="fcCaption"></p>
+      <div class="fc-grid" id="forecastGrid"></div>
+    </div>
+  </div>
+</div>
+
+<div class="fs-backdrop" id="fsBackdrop">
+  <div class="fs-panel">
+    <div class="fs-head">
+      <h2 id="fsTitle"></h2>
+      <button class="fs-close" id="fsClose" aria-label="Close"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4"><path d="M18 6L6 18M6 6l12 12"/></svg></button>
+    </div>
+    <div class="fs-body" id="fsBody"></div>
+  </div>
+</div>
+
+<script>
+"use strict";
+
+/* =========================================================================
+ * 1. MOCK DATA
+ *    TXN_ROWS   — one row per order, realised (day <= DATA_AS_OF).
+ *    TARGET_ROWS — monthly plan per (year, month, site, bu, ae), all 12 months
+ *                  of 2025 & 2026 so "vs Target" and forward Forecast work.
+ *    compute() re-aggregates these on every filter change.
+ * ========================================================================= */
+
+const MONTHS = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
+const DIM = [31,28,31,30,31,30,31,31,30,31,30,31];
+const CHART_PALETTE = ["#0D47A1","#1E6FE0","#42A5F5","#16A3A8","#4CAF50","#FFB300","#8E63C9","#E8756A","#F2994A","#5C6BC0","#26A69A"];
+
+let DATA_AS_OF = { year: 2026, month: 8, day: 25 };
+
+const SITES = ["Bangkok HQ","Bangkok North","Chiang Mai","Khon Kaen","Chonburi","Nakhon Ratchasima","Songkhla","Rayong"];
+const SITE_PROVINCE = {
+  "Bangkok HQ":"Bangkok","Bangkok North":"Bangkok","Chiang Mai":"Chiang Mai","Khon Kaen":"Khon Kaen",
+  "Chonburi":"Chonburi","Nakhon Ratchasima":"Nakhon Ratchasima","Songkhla":"Songkhla","Rayong":"Rayong",
+};
+const BUSINESS_UNITS = ["Lab-Diagnostics","Lab-Export","Lab-IM","Lab-Services","Non-Lab"];
+const AES = ["Somchai P.","Nattaya K.","Wirat S.","Ploy T.","Anan R.","Kanya M.","Decha L.","Suda W."];
+const CHANNELS = ["Hospital","Clinic","Distributor","Others"];
+// Each customer belongs to exactly one channel (a customer's orders are all in
+// that channel) — this drives the "Filter by Channel" on the Top 10 Customers
+// table and each txn row's channel.
+const CUSTOMER_CHANNEL = {
+  "Bangkok General Hospital":"Hospital", "Khon Kaen Regional Hospital":"Hospital",
+  "Pattaya Bay Hospital":"Hospital", "Udon Thani Hospital":"Hospital", "Rama Health Network":"Hospital",
+  "Songkhla Provincial Hospital":"Hospital", "Nakhon Ratchasima Hospital":"Hospital", "Surat Thani Hospital":"Hospital",
+  "Bumrungrad Clinic Group":"Clinic", "Phuket International Clinic":"Clinic",
+  "Vejthani Clinic":"Clinic", "Rayong Coastal Clinic":"Clinic",
+  "Thonglor Family Clinic":"Clinic", "Ari Health Clinic":"Clinic",
+  "Siriraj Diagnostics":"Distributor", "Silom Medical Lab":"Distributor", "Hat Yai Diagnostics":"Distributor",
+  "Eastern Medical Supplies":"Distributor", "Isan Lab Distribution":"Distributor",
+  "Chiang Mai Medical Center":"Others", "Nonthaburi Health Center":"Others",
+  "Korat Medical Group":"Others", "Chonburi Health Alliance":"Others", "Lampang Wellness Center":"Others",
+};
+const CUSTOMERS = Object.keys(CUSTOMER_CHANNEL);
+const PRODUCTS = [
+  "Blood Panel Kit","PCR Assay","Rapid Antigen Test","Immunoassay Reagent","Histology Set",
+  "Culture Media Pack","Biochem Analyzer Consumable","Coagulation Kit","Urinalysis Strip","Serology Panel",
+];
+
+const siteW = { "Bangkok HQ":26,"Bangkok North":15,"Chiang Mai":12,"Khon Kaen":10,"Chonburi":11,"Nakhon Ratchasima":9,"Songkhla":8,"Rayong":9 };
+const buW = { "Lab-Diagnostics":34,"Lab-Export":24,"Lab-IM":18,"Lab-Services":13,"Non-Lab":11 };
+const aeW = { "Somchai P.":16,"Nattaya K.":14,"Wirat S.":13,"Ploy T.":12,"Anan R.":12,"Kanya M.":12,"Decha L.":11,"Suda W.":10 };
+// target overall channel mix ≈ Hospital 54 / Clinic 25 / Distributor 12 / Others 9,
+// spread across the customers in each channel
+const CHAN_TOTAL_W = { Hospital:54, Clinic:25, Distributor:12, Others:9 };
+const CHAN_COUNT = {}; CUSTOMERS.forEach(c => CHAN_COUNT[CUSTOMER_CHANNEL[c]] = (CHAN_COUNT[CUSTOMER_CHANNEL[c]]||0) + 1);
+
+function mulberry32(a){return function(){a|=0;a=(a+0x6D2B79F5)|0;let t=Math.imul(a^(a>>>15),1|a);t=(t+Math.imul(t^(t>>>7),61|t))^t;return((t^(t>>>14))>>>0)/4294967296;};}
+const RNG = mulberry32(20260825);
+function hashStr(s){let h=2166136261;for(let i=0;i<s.length;i++){h^=s.charCodeAt(i);h=Math.imul(h,16777619);}return (h>>>0)/4294967296;}
+function weightedPick(list, wmap){
+  const total = list.reduce((s,k)=>s+wmap[k],0);
+  let r = RNG()*total;
+  for(const k of list){ r-=wmap[k]; if(r<=0) return k; }
+  return list[list.length-1];
+}
+function weekOf(d){ return Math.min(5, Math.ceil(d/7)); }
+
+const SEASONAL = [.86,.82,.96,.90,.98,1.00,1.03,1.06,1.00,1.07,1.09,1.16];
+const BASE_2025 = 64e6;
+const GROWTH_26 = 1.12;
+const AVG_ORDER = 78000;
+function achOf(y,m){ return y === 2026 ? (1.03 + (m-1)*0.0135) : (0.985 + 0.014*Math.sin((m-3)/2)); }
+function companyTarget(y,m){ return BASE_2025 * (y===2026?GROWTH_26:1) * SEASONAL[m-1] / achOf(y,m); }
+
+const CUST_W = {};
+CUSTOMERS.forEach(c => {
+  const ch = CUSTOMER_CHANNEL[c];
+  CUST_W[c] = (CHAN_TOTAL_W[ch] / CHAN_COUNT[ch]) * (0.55 + hashStr(c) * 0.9);
+});
+// stable per-customer YoY multiplier (applied to 2026 rows only) so each
+// customer's growth vs LY differs — some up strongly, a few down
+const CUST_YOY = {}; CUSTOMERS.forEach(c => CUST_YOY[c] = 0.90 + hashStr(c + "|yoy") * 0.42);
+const PROD_W = {}; PRODUCTS.forEach(p => PROD_W[p] = 0.4 + hashStr(p)*1.6);
+const PROD_BY_BU = {};
+BUSINESS_UNITS.forEach((bu,i) => { PROD_BY_BU[bu] = PRODUCTS.filter((_,j) => j % BUSINESS_UNITS.length === i || j % BUSINESS_UNITS.length === (i+2)%BUSINESS_UNITS.length); if(!PROD_BY_BU[bu].length) PROD_BY_BU[bu] = [PRODUCTS[i]]; });
+
+function realisedMonths(){
+  const out = [];
+  for (const y of [2025, 2026]){
+    for (let m = 1; m <= 12; m++){
+      if (y > DATA_AS_OF.year) continue;
+      if (y === DATA_AS_OF.year && m > DATA_AS_OF.month) continue;
+      out.push([y, m]);
+    }
+  }
+  return out;
+}
+
+function buildTargetRows(){
+  const rows = [];
+  for (const y of [2025, 2026]){
+    for (let m = 1; m <= 12; m++){
+      const combos = [];
+      let sumW = 0;
+      for (const s of SITES) for (const bu of BUSINESS_UNITS) for (const ae of AES){
+        const w = siteW[s]*buW[bu]*aeW[ae] * (0.8 + 0.4*hashStr(s+bu+ae+y+m));
+        combos.push({ s, bu, ae, w }); sumW += w;
+      }
+      const monthTgt = companyTarget(y, m);
+      for (const c of combos){
+        rows.push({ year:y, month:m, site:c.s, bu:c.bu, ae:c.ae, province:SITE_PROVINCE[c.s], amount: monthTgt * c.w / sumW });
+      }
+    }
+  }
+  return rows;
+}
+
+function buildTxnRows(){
+  const rows = [];
+  for (const [y, m] of realisedMonths()){
+    const partial = (y === DATA_AS_OF.year && m === DATA_AS_OF.month);
+    const frac = partial ? DATA_AS_OF.day / DIM[m-1] : 1;
+    const monthActual = companyTarget(y, m) * achOf(y, m) * frac * (0.98 + 0.04*RNG());
+    const n = Math.max(20, Math.round(monthActual / AVG_ORDER));
+    const batch = [];
+    let raw = 0;
+    for (let i = 0; i < n; i++){
+      const bu = weightedPick(BUSINESS_UNITS, buW);
+      const plist = PROD_BY_BU[bu];
+      const pw = {}; plist.forEach(p => pw[p] = PROD_W[p]);
+      const customer = weightedPick(CUSTOMERS, CUST_W);
+      const r = {
+        year:y, month:m,
+        day: partial ? (1 + Math.floor(RNG()*DATA_AS_OF.day)) : (1 + Math.floor(RNG()*DIM[m-1])),
+        site: weightedPick(SITES, siteW),
+        bu,
+        ae: weightedPick(AES, aeW),
+        channel: CUSTOMER_CHANNEL[customer] || "Others",
+        customer,
+        product: weightedPick(plist, pw),
+        amount: AVG_ORDER * (0.18 + Math.pow(RNG(), 2) * 3.1) * (y === 2026 ? CUST_YOY[customer] : 1),
+      };
+      r.province = SITE_PROVINCE[r.site];
+      r.week = weekOf(r.day);
+      batch.push(r); raw += r.amount;
+    }
+    const k = monthActual / raw;
+    batch.forEach(r => { r.amount = Math.round(r.amount * k); rows.push(r); });
+  }
+  return rows;
+}
+
+let TARGET_ROWS = buildTargetRows();
+let TXN_ROWS = buildTxnRows();
+
+/* ---- dataset-derived filter option lists ---- */
+let META = deriveMeta();
+function deriveMeta(){
+  const distinct = (arr, key) => [...new Set(arr.map(r => r[key]).filter(v => v !== undefined && v !== null && v !== ""))];
+  const years = [...new Set(TXN_ROWS.map(r => r.year))].sort((a,b)=>a-b);
+  return {
+    years,
+    sites: distinct(TXN_ROWS, "site").sort(),
+    bus: distinct(TXN_ROWS, "bu").sort(),
+    aes: distinct(TXN_ROWS, "ae").sort(),
+    provinces: distinct(TXN_ROWS, "province").sort(),
+    channels: distinct(TXN_ROWS, "channel"),
+  };
+}
+
+/* =========================================================================
+ * 2. FORMATTERS
+ * ========================================================================= */
+function fmtM(v){ return (v/1e6).toLocaleString("en-US",{minimumFractionDigits:2,maximumFractionDigits:2}) + "M"; }
+function fmtPct1(v){ return (v==null||!isFinite(v)) ? "N/A" : v.toFixed(1) + "%"; }
+function fmtSigned(v){ return (v==null||!isFinite(v)) ? "N/A" : (v>=0?"+":"") + v.toFixed(1) + "%"; }
+function deltaHtml(pct, label){
+  if (pct == null || !isFinite(pct)) return `<span class="delta flat">N/A${label?` ${label}`:""}</span>`;
+  const up = pct >= 0;
+  return `<span class="delta ${up?"up":"down"}">${up?"▲":"▼"} ${(up?"+":"−")}${Math.abs(pct).toFixed(1)}%${label?` <span class="muted" style="font-weight:600">${label}</span>`:""}</span>`;
+}
+function cssVar(n, f){ const v = getComputedStyle(document.documentElement).getPropertyValue(n).trim(); return v || f; }
+
+/* =========================================================================
+ * 3. FILTER STATE
+ * ========================================================================= */
+// ---- date helpers (Date Range is now a real [start, end] day-level window) ----
+function pad2(n){ return String(n).padStart(2, "0"); }
+function isoOf(o){ return `${o.year}-${pad2(o.month)}-${pad2(o.day)}`; }
+function parseISO(s){ const [y, m, d] = String(s).split("-").map(Number); return { year:y, month:m, day:d }; }
+function keyOf(o){ return o.year*10000 + o.month*100 + o.day; }
+function fmtDateTH(iso){ const o = parseISO(iso); return `${o.day} ${MONTHS[o.month-1]} ${o.year}`; }
+function dataMinISO(){
+  let k = Infinity;
+  for (const r of TXN_ROWS){ const kk = r.year*10000 + r.month*100 + r.day; if (kk < k) k = kk; }
+  if (k === Infinity) return `${DATA_AS_OF.year - 1}-01-01`;
+  return `${Math.floor(k/10000)}-${pad2(Math.floor(k/100)%100)}-${pad2(k%100)}`;
+}
+
+function defaultState(){
+  return {
+    start: `${DATA_AS_OF.year}-01-01`,        // 1 Jan of the current data year
+    end:   isoOf(DATA_AS_OF),                 // = data cut-off
+    site:[], bu:[], ae:[], province:[],
+  };
+}
+let state = defaultState();
+function rangeLabel(){ return `${fmtDateTH(state.start)} – ${fmtDateTH(state.end)}`; }
+
+/* =========================================================================
+ * 4. compute() — aggregate TXN_ROWS / TARGET_ROWS into render payloads.
+ * ========================================================================= */
+function dimMatch(r){
+  if (state.site.length && !state.site.includes(r.site)) return false;
+  if (state.bu.length && !state.bu.includes(r.bu)) return false;
+  if (state.ae.length && !state.ae.includes(r.ae)) return false;
+  if (state.province.length && !state.province.includes(r.province)) return false;
+  return true;
+}
+const monthKeyOf = (y, m, d) => y*10000 + m*100 + d;
+
+function compute(){
+  const S = parseISO(state.start), E = parseISO(state.end);
+  const startKey = keyOf(S), endKey = keyOf(E);
+  const prevStartKey = monthKeyOf(S.year - 1, S.month, S.day);
+  const prevEndKey   = monthKeyOf(E.year - 1, E.month, E.day);
+  const fY = E.year, fM = E.month;
+  const endFrac = E.day / DIM[fM-1];
+  const partialEnd = E.day < DIM[fM-1];
+
+  const inRange   = (y,m,d) => { const t = monthKeyOf(y,m,d); return t >= startKey && t <= endKey; };
+  const inRangePY = (y,m,d) => { const t = monthKeyOf(y,m,d); return t >= prevStartKey && t <= prevEndKey; };
+  // fraction of calendar month (y,m) that lies inside [start, end]
+  function monthCov(y, m){
+    const dim = DIM[m-1], ym = y*100 + m;
+    if (ym < S.year*100 + S.month || ym > E.year*100 + E.month) return 0;
+    const lo = (y === S.year && m === S.month) ? S.day : 1;
+    const hi = (y === E.year && m === E.month) ? E.day : dim;
+    return Math.max(0, hi - lo + 1) / dim;
+  }
+
+  // ---- aggregates (all respect the dimension filters via dimMatch) ----
+  function sumTxn(pred){ let s = 0; for (const r of TXN_ROWS){ if (dimMatch(r) && pred(r)) s += r.amount; } return s; }
+  const mA   = (y, m, extra) => sumTxn(r => r.year===y && r.month===m && inRange(r.year,r.month,r.day)   && (!extra || extra(r)));
+  const mPY  = (y, m, extra) => sumTxn(r => r.year===y && r.month===m && inRangePY(r.year,r.month,r.day) && (!extra || extra(r)));
+  const mFull = (y, m, extra) => sumTxn(r => r.year===y && r.month===m && monthKeyOf(r.year,r.month,r.day) <= endKey && (!extra || extra(r)));
+  function tFull(y, m, extra){ let s = 0; for (const r of TARGET_ROWS){ if (r.year===y && r.month===m && dimMatch(r) && (!extra || extra(r))) s += r.amount; } return s; }
+  const tCov = (y, m, extra) => tFull(y, m, extra) * monthCov(y, m);
+
+  // ---- range totals (KPI 1-3) ----
+  const rangeActual = sumTxn(r => inRange(r.year, r.month, r.day));
+  const rangeTarget = MONTHS.reduce((s, _, i) => s + tCov(fY, i + 1), 0);
+  const achievement = rangeTarget ? (rangeActual / rangeTarget) * 100 : null;
+  const rangePrev   = sumTxn(r => inRangePY(r.year, r.month, r.day));
+  const yoyPct      = rangePrev ? ((rangeActual - rangePrev) / rangePrev) * 100 : null;
+
+  // ---- forecast machinery (range end date = "today") ----
+  let ytdA = 0, ytdT = 0;
+  for (let m = 1; m <= fM; m++){
+    ytdA += mFull(fY, m);
+    ytdT += (m < fM ? tFull(fY, m) : tFull(fY, fM) * endFrac);
+  }
+  const projAch = ytdT ? ytdA / ytdT : 1;
+  function monthForecast(m){
+    if (m < fM) return mFull(fY, m);
+    if (m === fM){ const a = mFull(fY, fM); return endFrac ? a / endFrac : tFull(fY, fM) * projAch; }
+    return tFull(fY, m) * projAch;                 // future month
+  }
+  const foreEOM = monthForecast(fM);
+  const foreEOY = MONTHS.reduce((s, _, i) => s + monthForecast(i + 1), 0);
+  const annualTarget = MONTHS.reduce((s, _, i) => s + tFull(fY, i + 1), 0);
+  const eomTargetFull = tFull(fY, fM);
+
+  // ---- KPI cards ----
+  const kpis = {
+    totalSales: rangeActual, rangeTarget,
+    salesVsTarget: rangeTarget ? ((rangeActual - rangeTarget) / rangeTarget) * 100 : null,
+    achievement,
+    yoyPct, yoyBaseVal: rangePrev,
+    foreEOM, foreEOMvsTgt: eomTargetFull ? ((foreEOM - eomTargetFull) / eomTargetFull) * 100 : null,
+    foreEOY, foreEOYvsTgt: annualTarget ? ((foreEOY - annualTarget) / annualTarget) * 100 : null,
+  };
+
+  // ---- window-clipped monthly series (used by the Area chart & YoY-Growth chart) ----
+  const s2026 = MONTHS.map((_, i) => monthCov(fY, i + 1) > 0 ? mA(fY, i + 1) / 1e6 : null);
+  const s2025win = MONTHS.map((_, i) => monthCov(fY, i + 1) > 0 ? mPY(fY - 1, i + 1) / 1e6 : null);
+  const yoyByMonthWin = MONTHS.map((_, i) => {
+    const cur = s2026[i], prev = s2025win[i];
+    return (cur == null || !prev) ? null : ((cur - prev) / prev) * 100;
+  });
+
+  // ---- Sales Trend & Forecast (Monthly): full annual context ----
+  // "Actual Sales" view — 2025 is a completed year, so ALWAYS show all 12 months;
+  // 2026 shows Jan..end-month (the end month is MTD-to-end-date), rest blank.
+  const taFull2025 = MONTHS.map((_, i) => mFull(fY - 1, i + 1) / 1e6);   // full 2025, every month
+  const ta2026 = MONTHS.map((_, i) => (i + 1) <= fM ? mFull(fY, i + 1) / 1e6 : null);
+  // 2025 comparison values MTD-aligned on the partial end month, full elsewhere
+  const ta2025cmp = MONTHS.map((_, i) => {
+    if ((i + 1) === fM && partialEnd) return sumTxn(r => r.year === fY - 1 && r.month === fM && r.day <= E.day) / 1e6;
+    return taFull2025[i];
+  });
+  const taTgt = MONTHS.map((_, i) => (i + 1) === fM ? tFull(fY, fM) * endFrac / 1e6 : tFull(fY, i + 1) / 1e6);
+  const taYoY = MONTHS.map((_, i) => {
+    const cur = ta2026[i], prev = ta2025cmp[i];
+    return (cur == null || !prev) ? null : ((cur - prev) / prev) * 100;
+  });
+  const taAch = MONTHS.map((_, i) => {
+    const cur = ta2026[i], t = taTgt[i];
+    return (cur == null || !t) ? null : (cur / t) * 100;
+  });
+  const curIdx = (partialEnd && fM >= 1) ? fM - 1 : -1;   // partial end month → light "MTD" bar
+
+  // "Forecast" view — actual (solid) + projection (shaded, stacked) per month.
+  // The stack total = monthForecast(m), the SAME figure the Forecast Summary uses.
+  const fActual = MONTHS.map((_, i) => {
+    const m = i + 1;
+    if (m < fM) return mFull(fY, m) / 1e6;
+    if (m === fM) return mFull(fY, fM) / 1e6;           // MTD
+    return 0;
+  });
+  const fProjection = MONTHS.map((_, i) => {
+    const m = i + 1;
+    const tot = monthForecast(m) / 1e6;
+    return Math.max(0, tot - fActual[i]);
+  });
+  const fTotal = MONTHS.map((_, i) => +(monthForecast(i + 1) / 1e6).toFixed(2));
+
+  const trendA = { months: MONTHS.slice(), s2025: taFull2025, s2026: ta2026, tgt2026: taTgt,
+    yoyByMonth: taYoY, achByMonth: taAch, curIdx, refYear: fY };
+  const trendF = { months: MONTHS.slice(), fActual, fProjection, fTotal, lastActualMonth: fM, partialEnd, refYear: fY };
+  // Area chart / YoY-Growth chart keep using the window-clipped series
+  const s2025 = s2025win, yoyByMonth = yoyByMonthWin;
+
+  // ---- Business Unit: window vs the same window last year ----
+  const buRows = META.bus.map(bu => {
+    const v2026 = sumTxn(r => r.bu === bu && inRange(r.year, r.month, r.day)) / 1e6;
+    const v2025 = sumTxn(r => r.bu === bu && inRangePY(r.year, r.month, r.day)) / 1e6;
+    return { name: bu, v2025, v2026, growth: v2025 ? ((v2026 - v2025) / v2025) * 100 : null };
+  }).sort((a, b) => b.v2026 - a.v2026);
+
+  const areaTrend = { months: MONTHS.slice(), s2025, s2026, refYear: fY };
+
+  // ---- YoY Growth (M / Q) over the in-window months ----
+  const growthM = [];
+  MONTHS.forEach((_, i) => { if (s2026[i] != null) growthM.push({ label: MONTHS[i], pct: yoyByMonth[i] }); });
+  const growthQ = [];
+  for (let q = 0; q < 4; q++){
+    const ms = [q*3, q*3+1, q*3+2].filter(mi => s2026[mi] != null);
+    if (!ms.length) continue;
+    const fullQ = ms.length === 3 && monthCov(fY, ms[2] + 1) >= 1;
+    let cur = 0, prev = 0;
+    ms.forEach(mi => { cur += s2026[mi]; prev += s2025[mi] || 0; });
+    growthQ.push({ label: `Q${q+1}${fullQ ? "" : "*"}`, pct: prev ? ((cur - prev) / prev) * 100 : null });
+  }
+
+  // ---- Forecast Summary — standard periods, anchored on the range end date ----
+  const qi = Math.floor((fM - 1) / 3), qStart = qi * 3 + 1;
+  let qActual = 0, qForecast = 0, qTarget = 0;
+  for (let m = qStart; m < qStart + 3; m++){
+    qActual   += mFull(fY, m);
+    qForecast += monthForecast(m);
+    qTarget   += tFull(fY, m);
+  }
+  let yActual = 0;
+  for (let m = 1; m <= fM; m++) yActual += mFull(fY, m);
+  const endLbl = fmtDateTH(state.end);
+  const forecast = [
+    { title:`This Month (${MONTHS[fM-1]} ${fY})`, actual: mFull(fY, fM), forecast: foreEOM, target: eomTargetFull,
+      achHelp:`% Achievement = ยอดขายจริงในเดือน ${MONTHS[fM-1]} ${fY} (ถึง ${endLbl}) ÷ Target เต็มเดือน`,
+      grHelp:`Forecast vs Target = ประมาณการยอดทั้งเดือน (ยอดถึงวันสิ้นสุด ÷ สัดส่วนวันที่ผ่านไปในเดือน) เทียบ Target เต็มเดือน` },
+    { title:`This Quarter (Q${qi+1} ${fY})`, actual: qActual, forecast: qForecast, target: qTarget,
+      achHelp:`% Achievement = ยอดขายจริงสะสมของไตรมาสนี้ (ถึง ${endLbl}) ÷ Target ทั้งไตรมาส`,
+      grHelp:`Forecast vs Target = (ยอดจริงเดือนที่ปิดแล้ว + Forecast เดือนที่เหลือในไตรมาส) เทียบ Target ทั้งไตรมาส` },
+    { title:`This Year (${fY})`, actual: yActual, forecast: foreEOY, target: annualTarget,
+      achHelp:`% Achievement = ยอดขายจริงสะสมทั้งปี (ม.ค.–${endLbl}) ÷ Target ทั้งปี`,
+      grHelp:`Forecast vs Target = (ยอดจริง ม.ค.–${endLbl} + Forecast เดือนที่เหลือ = Target เดือนนั้น × อัตราบรรลุเป้าที่คาดการณ์ ${(projAch*100).toFixed(0)}%) เทียบ Target ทั้งปี` },
+  ].map(c => ({
+    ...c,
+    ofTarget: c.target ? (c.actual / c.target) * 100 : null,
+    vsTarget: c.target ? ((c.forecast - c.target) / c.target) * 100 : null,
+  }));
+
+  return { kpis, trendA, trendF, buRows, areaTrend, growthM, growthQ, forecast };
+}
+
+/* =========================================================================
+ * 4b. Top 10 Customers — computed once per dataset, independent of the main
+ *     filters. Only the local "Filter by Channel" control re-ranks it.
+ *     Both years are YTD-aligned (Jan..DATA_AS_OF month) for a fair %Growth.
+ * ========================================================================= */
+let CUST_BASE = [];
+function computeCustomerBase(){
+  const cap = DATA_AS_OF;
+  const cur = new Map(), prev = new Map();
+  for (const r of TXN_ROWS){
+    if (r.month > cap.month) continue;
+    if (r.month === cap.month && r.day > cap.day) continue;
+    if (r.year === cap.year)      cur.set(r.customer, (cur.get(r.customer) || 0) + r.amount);
+    else if (r.year === cap.year - 1) prev.set(r.customer, (prev.get(r.customer) || 0) + r.amount);
+  }
+  const names = new Set([...cur.keys(), ...prev.keys()]);
+  CUST_BASE = [...names].map(name => {
+    const y2026 = cur.get(name) || 0, y2025 = prev.get(name) || 0;
+    return {
+      name, channel: CUSTOMER_CHANNEL[name] || "Others",
+      y2025, y2026, growth: y2025 ? ((y2026 - y2025) / y2025) * 100 : null,
+    };
+  });
+}
+
+/* =========================================================================
+ * 5. RENDERING
+ * ========================================================================= */
+const charts = { trend:null, bu:null, growth:null, area:null };
+let trendView = "actual";   // "actual" | "forecast"
+let growthView = "m";       // "m" | "q"
+let custChannel = "";       // "" = All
+
+const KPI_ICONS = {
+  db:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><ellipse cx="12" cy="5" rx="8" ry="3"/><path d="M4 5v6c0 1.7 3.6 3 8 3s8-1.3 8-3V5M4 11v6c0 1.7 3.6 3 8 3s8-1.3 8-3v-6"/></svg>',
+  target:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="9"/><circle cx="12" cy="12" r="5"/><circle cx="12" cy="12" r="1.5"/></svg>',
+  trend:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M23 6l-9.5 9.5-5-5L1 18"/><path d="M17 6h6v6"/></svg>',
+  cal:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="4" width="18" height="17" rx="2"/><path d="M3 10h18M8 2v4M16 2v4"/></svg>',
+  chart:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 3v18h18M8 16V9M13 16V5M18 16v-4"/></svg>',
+};
+
+function renderKpis(k){
+  const cards = [
+    { primary:true, tint:"", ic:"ic-blue", icon:"db", label:"Total Sales (ช่วงที่เลือก)", value:fmtM(k.totalSales),
+      sub:`vs. Target <b>${fmtM(k.rangeTarget)}</b> ${deltaHtml(k.salesVsTarget)}` },
+    { tint:"tint-teal", ic:"ic-teal", icon:"target", label:"Achievement", value:fmtPct1(k.achievement),
+      sub:`vs. Target <b>${fmtM(k.rangeTarget)}</b>` },
+    { tint:"tint-purple", ic:"ic-purple", icon:"trend", label:"Sales Growth (YoY)", value:fmtSigned(k.yoyPct),
+      sub:`vs. ช่วงเดียวกันปีก่อน <b>${fmtM(k.yoyBaseVal)}</b>` },
+    { tint:"tint-sky", ic:"ic-sky", icon:"cal", label:"Forecast (End of Month)", value:fmtM(k.foreEOM),
+      sub:`${deltaHtml(k.foreEOMvsTgt)} จาก Target` },
+    { tint:"tint-teal", ic:"ic-green", icon:"chart", label:"Forecast (End of Year)", value:fmtM(k.foreEOY),
+      sub:`${deltaHtml(k.foreEOYvsTgt)} จาก Target` },
+  ];
+  document.getElementById("kpiRow").innerHTML = cards.map(c => `
+    <div class="kpi ${c.primary?"kpi-primary":c.tint}">
+      <div class="kpi-icon ${c.ic}">${KPI_ICONS[c.icon]}</div>
+      <div class="kpi-texts">
+        <div class="kpi-label">${c.label}</div>
+        <div class="kpi-value">${c.value}</div>
+        <div class="kpi-sub">${c.sub}</div>
+      </div>
+    </div>`).join("");
+}
+
+// generic "value on top of bar" plugin (skips line datasets & null values)
+function barValueLabels(fmt, forceColor){
+  return { id:"bvl", afterDatasetsDraw(chart){
+    const { ctx } = chart;
+    ctx.save(); ctx.font = "700 9px Inter, sans-serif"; ctx.textAlign = "center"; ctx.textBaseline = "bottom";
+    chart.data.datasets.forEach((ds, di) => {
+      if (ds.type === "line") return;
+      chart.getDatasetMeta(di).data.forEach((el, i) => {
+        const v = ds.data[i];
+        if (v == null) return;
+        ctx.fillStyle = forceColor || (Array.isArray(ds.backgroundColor) ? ds.backgroundColor[i] : ds.backgroundColor);
+        ctx.fillText(fmt(v), el.x, el.y - 3);
+      });
+    });
+    ctx.restore();
+  }};
+}
+
+// %Growth (YoY) label drawn above each month group (Actual Sales view)
+function yoyGrowthLabels(pA, ok, bad){
+  return { id:"yoyG", afterDatasetsDraw(chart){
+    const { ctx } = chart;
+    const m0 = chart.getDatasetMeta(0).data, m1 = chart.getDatasetMeta(1).data;
+    ctx.save(); ctx.font = "800 9.5px Inter, sans-serif"; ctx.textAlign = "center"; ctx.textBaseline = "bottom";
+    pA.months.forEach((_, i) => {
+      const g = pA.yoyByMonth[i]; if (g == null) return;
+      const y2025 = m0[i] ? m0[i].y : Infinity;
+      const y2026 = (m1[i] && pA.s2026[i] != null) ? m1[i].y : Infinity;
+      const topY = Math.min(y2025, y2026);
+      const x = (m0[i] && m1[i]) ? (m0[i].x + m1[i].x) / 2 : (m0[i] || m1[i]).x;
+      ctx.fillStyle = g >= 0 ? ok : bad;
+      ctx.fillText(`${g >= 0 ? "▲" : "▼"} ${g >= 0 ? "+" : ""}${g.toFixed(1)}%`, x, topY - 16);
+    });
+    ctx.restore();
+  }};
+}
+
+/* === 1. Sales Trend & Forecast (Monthly) — toggle Actual Sales / Forecast === */
+function renderTrendForecast(pA, pF){
+  const p700 = cssVar("--p-700","#1d6fb8"), p400 = cssVar("--p-400","#a9d1f3");
+  const grid = cssVar("--border-soft","#e9eef4"), ok = cssVar("--success","#16a34a"), bad = cssVar("--error","#dc2626");
+  const legend = document.getElementById("trendLegend"), note = document.getElementById("trendNote");
+  const refY = pA.refYear;
+  let cfg;
+
+  if (trendView === "actual"){
+    const ci = pA.curIdx;
+    legend.innerHTML = `
+      <span class="k"><span class="swatch" style="background:${p400}"></span>Actual ${refY-1}</span>
+      <span class="k"><span class="swatch" style="background:${p700}"></span>Actual ${refY}</span>
+      ${ci >= 0 ? `<span class="k"><span class="swatch" style="background:#7fb3dd"></span>${refY} MTD (เดือนล่าสุด ยังไม่จบ)</span>` : ""}
+      <span class="k muted">▲▼ %G = Growth (YoY) รายเดือน</span>`;
+    note.innerHTML = `<b>มุมมอง Actual Sales:</b> Actual ${refY-1} แสดงครบทั้งปี (ปีที่ผ่านมาแล้ว) · Actual ${refY} แสดงถึงเดือนล่าสุดที่มีข้อมูล (MTD) · <b>%G</b> บนกราฟ = %Growth (YoY) เทียบเดือนเดียวกันปีก่อน${ci >= 0 ? ` (เดือน ${pA.months[ci]} เทียบช่วง MTD เดียวกัน)` : ""} · Tooltip มีรายละเอียด %G + %Achievement`;
+    const maxV = Math.max(...pA.s2025.filter(v => v != null), ...pA.s2026.filter(v => v != null), 1);
+    cfg = {
+      type:"bar",
+      data:{ labels:pA.months, datasets:[
+        { label:`Actual ${refY-1}`, data:pA.s2025, backgroundColor:p400, borderRadius:3, categoryPercentage:.74, barPercentage:.9 },
+        { label:`Actual ${refY}`,   data:pA.s2026, borderRadius:3, categoryPercentage:.74, barPercentage:.9,
+          backgroundColor:pA.months.map((_, i) => i === ci ? "#7fb3dd" : p700) },
+      ]},
+      options:{
+        responsive:true, maintainAspectRatio:false, interaction:{ mode:"index", intersect:false },
+        layout:{ padding:{ top:44 } },
+        plugins:{ legend:{ display:false }, tooltip:{ callbacks:{
+          label:c => `${c.dataset.label}${c.datasetIndex === 1 && c.dataIndex === ci ? " (MTD)" : ""}: ${c.parsed.y == null ? "–" : c.parsed.y.toFixed(2) + "M"}`,
+          afterBody:(items) => {
+            const i = items[0].dataIndex, out = [];
+            const g = pA.yoyByMonth[i], a = pA.achByMonth[i];
+            const mtd = i === ci ? " MTD" : "";
+            if (g != null) out.push(`%Growth (YoY): ${g >= 0 ? "+" : ""}${g.toFixed(1)}%  (vs ${pA.months[i]} ${refY-1}${mtd})`);
+            if (a != null) out.push(`%Achievement: ${a.toFixed(1)}%${i === ci ? "  (MTD เทียบ Target ถึงวันนี้)" : `  (Target ${pA.tgt2026[i].toFixed(1)}M)`}`);
+            return out;
+          },
+        }}},
+        scales:{
+          x:{ grid:{ display:false }, ticks:{ font:{ size:10 } } },
+          y:{ beginAtZero:true, suggestedMax:maxV*1.25, grid:{ color:grid }, ticks:{ font:{ size:10 }, callback:v => v + "M" } },
+        },
+      },
+      plugins:[ barValueLabels(v => v.toFixed(0) + "M"), yoyGrowthLabels(pA, ok, bad) ],
+    };
+  } else {
+    const ci = pF.partialEnd ? pF.lastActualMonth - 1 : -1;
+    legend.innerHTML = `<span class="k"><span class="swatch" style="background:${p700}"></span>Actual (ถึงปัจจุบัน)</span>
+      <span class="k"><span class="swatch" style="background:#9ec9ee"></span>Forecast (ประมาณการ)</span>`;
+    note.innerHTML = `<b>มุมมอง Forecast:</b> แท่งเข้ม = ยอดจริง · แท่งอ่อน (ต่อยอดขึ้น) = ประมาณการส่วนที่เหลือ${ci >= 0 ? ` — เดือน <b>${pF.months[ci]}</b> ต่อจากยอด MTD ไปจนจบเดือน (ยอด MTD ÷ สัดส่วนวันที่ผ่านไป)` : ""} · เดือนอนาคต = Target เดือนนั้น × อัตราบรรลุเป้าที่คาดการณ์ · <b>ใช้สูตรเดียวกับการ์ด Forecast Summary</b>`;
+    const maxV = Math.max(...pF.fTotal, 1);
+    cfg = {
+      type:"bar",
+      data:{ labels:pF.months, datasets:[
+        { label:"Actual", data:pF.fActual, backgroundColor:p700, stack:"f", borderRadius:{ topLeft:0, topRight:0 }, categoryPercentage:.64, barPercentage:.86 },
+        { label:"Forecast", data:pF.fProjection, backgroundColor:"#9ec9ee", stack:"f", borderRadius:3, categoryPercentage:.64, barPercentage:.86 },
+      ]},
+      options:{
+        responsive:true, maintainAspectRatio:false, interaction:{ mode:"index", intersect:false },
+        layout:{ padding:{ top:24 } },
+        plugins:{ legend:{ display:false }, tooltip:{ callbacks:{
+          label:c => `${c.dataset.label}: ${c.parsed.y == null ? "–" : c.parsed.y.toFixed(2) + "M"}`,
+          afterBody:(items) => {
+            const i = items[0].dataIndex;
+            const tot = pF.fTotal[i];
+            const kind = i < pF.lastActualMonth - 1 ? "(ยอดจริงเต็มเดือน)" : (i === pF.lastActualMonth - 1 ? "(Actual MTD + ประมาณการที่เหลือ)" : "(ประมาณการทั้งเดือน)");
+            return [ `รวม Forecast ${pF.months[i]}: ${tot.toFixed(2)}M  ${kind}` ];
+          },
+        }}},
+        scales:{
+          x:{ stacked:true, grid:{ display:false }, ticks:{ font:{ size:10 } } },
+          y:{ stacked:true, beginAtZero:true, suggestedMax:maxV*1.2, grid:{ color:grid }, ticks:{ font:{ size:10 }, callback:v => v + "M" } },
+        },
+      },
+      plugins:[{ id:"fcTotalLabels", afterDatasetsDraw(chart){
+        const { ctx } = chart, meta = chart.getDatasetMeta(0), yS = chart.scales.y;
+        ctx.save(); ctx.font = "700 9px Inter, sans-serif"; ctx.textAlign = "center"; ctx.textBaseline = "bottom";
+        meta.data.forEach((el, i) => {
+          const tot = pF.fTotal[i]; if (!tot) return;
+          ctx.fillStyle = i < pF.lastActualMonth ? p700 : "#5a93c4";
+          ctx.fillText(tot.toFixed(0) + "M", el.x, yS.getPixelForValue(tot) - 3);
+        });
+        ctx.restore();
+      }}],
+    };
+  }
+  if (charts.trend) charts.trend.destroy();
+  charts.trend = new Chart(document.getElementById("trendChart"), cfg);
+}
+
+/* === 2. Sales by Business Unit — horizontal, 2025 vs 2026, %G at bar end === */
+function renderBuChart(rows){
+  const p700 = cssVar("--p-700","#1d6fb8"), p400 = cssVar("--p-400","#a9d1f3");
+  const grid = cssVar("--border-soft","#e9eef4"), ok = cssVar("--success","#16a34a"), bad = cssVar("--error","#dc2626");
+  document.getElementById("buLegend").innerHTML = `
+    <span class="k"><span class="swatch" style="background:${p400}"></span>2025</span>
+    <span class="k"><span class="swatch" style="background:${p700}"></span>2026</span>
+    <span class="k muted">%G = Growth vs LY</span>`;
+  const maxV = Math.max(...rows.map(r => Math.max(r.v2025, r.v2026)), 1);
+  if (charts.bu) charts.bu.destroy();
+  charts.bu = new Chart(document.getElementById("buChart"), {
+    type:"bar",
+    data:{ labels:rows.map(r => r.name), datasets:[
+      { label:"2025", data:rows.map(r => r.v2025), backgroundColor:p400, borderRadius:3, categoryPercentage:.74, barPercentage:.92 },
+      { label:"2026", data:rows.map(r => r.v2026), backgroundColor:p700, borderRadius:3, categoryPercentage:.74, barPercentage:.92 },
+    ]},
+    options:{
+      indexAxis:"y", responsive:true, maintainAspectRatio:false,
+      layout:{ padding:{ right:58 } },
+      plugins:{ legend:{ display:false }, tooltip:{ callbacks:{
+        label:c => `${c.dataset.label}: ${c.parsed.x.toFixed(2)}M`,
+        afterBody:(items) => { const g = rows[items[0].dataIndex].growth; return [ `%G (vs LY): ${g == null ? "N/A" : (g >= 0 ? "+" : "") + g.toFixed(1) + "%"}` ]; },
+      }}},
+      scales:{
+        x:{ beginAtZero:true, suggestedMax:maxV*1.12, grid:{ color:grid }, ticks:{ font:{ size:10 }, callback:v => v + "M" } },
+        y:{ grid:{ display:false }, ticks:{ font:{ size:10.5 } } },
+      },
+    },
+    plugins:[{ id:"buG", afterDatasetsDraw(chart){
+      const { ctx } = chart, meta = chart.getDatasetMeta(1);
+      ctx.save(); ctx.font = "800 10px Inter, sans-serif"; ctx.textBaseline = "middle"; ctx.textAlign = "left";
+      meta.data.forEach((el, i) => {
+        const g = rows[i].growth; if (g == null) return;
+        ctx.fillStyle = g >= 0 ? ok : bad;
+        ctx.fillText(`${g >= 0 ? "+" : ""}${g.toFixed(1)}%G`, el.x + 7, el.y);
+      });
+      ctx.restore();
+    }}],
+  });
+}
+
+/* === 3. Sales YoY Growth — toggle M / Q, green ≥0 / red <0 === */
+function renderGrowthChart(gM, gQ, refY){
+  const grid = cssVar("--border-soft","#e9eef4"), ok = cssVar("--success","#16a34a"), bad = cssVar("--error","#dc2626");
+  document.getElementById("growthLegend").innerHTML = `
+    <span class="k"><span class="swatch" style="background:${ok}"></span>เติบโต (≥ 0%)</span>
+    <span class="k"><span class="swatch" style="background:${bad}"></span>หดตัว (&lt; 0%)</span>`;
+  const src = growthView === "q" ? gQ : gM;
+  const labels = src.map(r => r.label), vals = src.map(r => r.pct);
+  document.getElementById("growthNote").innerHTML = growthView === "q"
+    ? `<b>YoY (Q):</b> %การเติบโตรายไตรมาส เทียบไตรมาสเดียวกันปีก่อน · <b>Q*</b> = ไตรมาสที่อยู่ในช่วงที่เลือกไม่ครบ 3 เดือน · แสดงเฉพาะเดือน/ไตรมาสที่อยู่ในช่วงวันที่ที่เลือก`
+    : `<b>YoY (M):</b> %การเติบโตรายเดือน = (ยอด ${refY} − ยอด ${refY-1} เดือนเดียวกัน) ÷ ยอด ${refY-1} · แสดงเฉพาะเดือนที่อยู่ในช่วงวันที่ที่เลือก`;
+  if (charts.growth) charts.growth.destroy();
+  charts.growth = new Chart(document.getElementById("growthChart"), {
+    type:"bar",
+    data:{ labels, datasets:[{ data:vals, backgroundColor:vals.map(v => (v ?? 0) >= 0 ? ok : bad), borderRadius:3, categoryPercentage:.66, barPercentage:.82 }] },
+    options:{
+      responsive:true, maintainAspectRatio:false,
+      layout:{ padding:{ top:18, bottom:14 } },
+      plugins:{ legend:{ display:false }, tooltip:{ callbacks:{
+        label:c => `YoY: ${c.parsed.y == null ? "N/A" : (c.parsed.y >= 0 ? "+" : "") + c.parsed.y.toFixed(1) + "%"}`,
+      }}},
+      scales:{
+        x:{ grid:{ display:false }, ticks:{ font:{ size:10 } } },
+        y:{ grid:{ color:grid }, ticks:{ font:{ size:10 }, callback:v => v + "%" } },
+      },
+    },
+    plugins:[{ id:"gL", afterDatasetsDraw(chart){
+      const { ctx } = chart, meta = chart.getDatasetMeta(0);
+      ctx.save(); ctx.font = "700 9px Inter, sans-serif"; ctx.textAlign = "center";
+      meta.data.forEach((el, i) => {
+        const v = vals[i]; if (v == null) return;
+        ctx.fillStyle = v >= 0 ? ok : bad;
+        ctx.textBaseline = v >= 0 ? "bottom" : "top";
+        ctx.fillText(`${v >= 0 ? "+" : ""}${v.toFixed(1)}%`, el.x, v >= 0 ? el.y - 3 : el.y + 3);
+      });
+      ctx.restore();
+    }}],
+  });
+}
+
+/* === 4. Sales Trend (Area) — 2025 vs 2026 monthly, value label on every point === */
+function renderAreaChart(p){
+  const p700 = cssVar("--p-700","#1d6fb8"), p400 = cssVar("--p-400","#a9d1f3");
+  const p600 = cssVar("--p-600","#3d8ed8"), t6 = cssVar("--text-600","#64748b");
+  const grid = cssVar("--border-soft","#e9eef4"), refY = p.refYear;
+  document.getElementById("areaLegend").innerHTML = `
+    <span class="k"><span class="swatch" style="background:${p400}"></span>${refY-1}</span>
+    <span class="k"><span class="swatch" style="background:${p700}"></span>${refY}</span>`;
+  const maxV = Math.max(...p.s2025.filter(v => v != null), ...p.s2026.filter(v => v != null), 1);
+  if (charts.area) charts.area.destroy();
+  charts.area = new Chart(document.getElementById("areaChart"), {
+    type:"line",
+    data:{ labels:p.months, datasets:[
+      { label:String(refY-1), data:p.s2025, borderColor:p400, backgroundColor:"rgba(169,209,243,.35)", fill:true, tension:.35, pointRadius:2, borderWidth:2 },
+      { label:String(refY),   data:p.s2026, borderColor:p700, backgroundColor:"rgba(29,111,184,.18)", fill:true, tension:.35, pointRadius:2.5, borderWidth:2.5, spanGaps:false },
+    ]},
+    options:{
+      responsive:true, maintainAspectRatio:false, events:[],
+      layout:{ padding:{ top:18, bottom:16 } },
+      plugins:{ legend:{ display:false }, tooltip:{ enabled:false } },
+      scales:{
+        x:{ grid:{ display:false }, ticks:{ font:{ size:10 } } },
+        y:{ beginAtZero:true, suggestedMax:maxV*1.2, grid:{ color:grid }, ticks:{ font:{ size:10 }, callback:v => v + "M" } },
+      },
+    },
+    plugins:[{ id:"areaLabels", afterDatasetsDraw(chart){
+      const { ctx } = chart;
+      ctx.save(); ctx.font = "700 8.5px Inter, sans-serif"; ctx.textAlign = "center";
+      // 2026 line — label above the point; 2025 line — label below
+      [{ di:1, color:p700, dy:-6, base:"bottom" }, { di:0, color:t6, dy:9, base:"top" }].forEach(cfg => {
+        const ds = chart.data.datasets[cfg.di];
+        ctx.fillStyle = cfg.color; ctx.textBaseline = cfg.base;
+        chart.getDatasetMeta(cfg.di).data.forEach((el, i) => {
+          const v = ds.data[i]; if (v == null) return;
+          ctx.fillText(v.toFixed(2) + "M", el.x, el.y + cfg.dy);
+        });
+      });
+      ctx.restore();
+    }}],
+  });
+}
+
+/* === 5. Top 10 Customers — filter by channel first, then rank Top 10 by 2026 === */
+function renderCustTable(){
+  let pool = CUST_BASE.slice();
+  if (custChannel) pool = pool.filter(r => r.channel === custChannel);
+  const rows = pool.sort((a, b) => b.y2026 - a.y2026).slice(0, 10);
+  document.getElementById("custHint").textContent = custChannel
+    ? `Top ${rows.length} ใน Channel "${custChannel}" (จากทั้งหมด ${pool.length} ราย)`
+    : `Top 10 จากลูกค้าทุก Channel (${CUST_BASE.length} ราย)`;
+  document.getElementById("custTable").innerHTML = `
+    <table class="dtable">
+      <thead><tr><th>#</th><th class="l">Customer Name</th><th>ยอดขาย (Y${DATA_AS_OF.year-1})</th><th>ยอดขาย (Y${DATA_AS_OF.year})</th><th>%Growth</th></tr></thead>
+      <tbody>${rows.map((r, i) => {
+        const up = (r.growth ?? 0) >= 0;
+        return `<tr>
+          <td class="rank">${i+1}</td>
+          <td class="l name" title="${r.name}">${r.name}${custChannel ? "" : `<span class="chtag">${r.channel}</span>`}</td>
+          <td class="num">${fmtM(r.y2025)}</td>
+          <td class="num">${fmtM(r.y2026)}</td>
+          <td class="${up ? "g" : "r"}">${r.growth == null ? "–" : (up ? "▲ +" : "▼ ") + Math.abs(r.growth).toFixed(1) + "%"}</td>
+        </tr>`;
+      }).join("")}</tbody>
+    </table>`;
+}
+
+/* === 6. Forecast Summary === */
+function renderForecast(cards){
+  document.getElementById("fcCaption").innerHTML =
+    `แต่ละการ์ด = 1 ช่วงเวลา · <b>Actual</b> = ยอดขายจริงสะสมถึงปัจจุบัน · <b>Forecast</b> = ประมาณการเมื่อจบช่วงเวลานั้น · <b>Target</b> = เป้าของช่วงเวลานั้น · <b>% Achievement</b> = Actual ÷ Target · <b>Forecast vs Target</b> = Forecast เทียบ Target · ชี้ที่ <span class="qm">?</span> เพื่อดูวิธีคำนวณ`;
+  document.getElementById("forecastGrid").innerHTML = cards.map(c => {
+    const up = (c.vsTarget ?? 0) >= 0;
+    return `
+    <div class="fc-card">
+      <div class="t"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="4" width="18" height="17" rx="2"/><path d="M3 10h18M8 2v4M16 2v4"/></svg>${c.title}</div>
+      <div class="fc-nums">
+        <div><div class="b">Actual</div><div class="v">${fmtM(c.actual)}</div></div>
+        <div><div class="b">Forecast</div><div class="v fore">${fmtM(c.forecast)}</div></div>
+        <div><div class="b">Target</div><div class="v">${fmtM(c.target)}</div></div>
+      </div>
+      <div class="fc-metric">
+        <div class="mrow">
+          <span class="lbl">% Achievement (เทียบเป้า) <span class="qm" title="${c.achHelp}">?</span></span>
+          <span class="val">${c.ofTarget == null ? "–" : c.ofTarget.toFixed(0) + "%"}</span>
+        </div>
+        <div class="fc-prog"><span style="width:${Math.min(100, c.ofTarget || 0).toFixed(0)}%"></span></div>
+        <div class="mrow">
+          <span class="lbl">Forecast vs Target <span class="qm" title="${c.grHelp}">?</span></span>
+          <span class="val ${up ? "g" : "r"}">${c.vsTarget == null ? "–" : (up ? "▲ +" : "▼ ") + Math.abs(c.vsTarget).toFixed(1) + "%"}</span>
+        </div>
+      </div>
+    </div>`;
+  }).join("");
+}
+
+function renderDashboard(flash){
+  const body = document.getElementById("dashboardBody");
+  const run = () => {
+    const p = compute();
+    renderKpis(p.kpis);
+    renderTrendForecast(p.trendA, p.trendF);
+    renderBuChart(p.buRows);
+    renderGrowthChart(p.growthM, p.growthQ, p.areaTrend.refYear);
+    renderAreaChart(p.areaTrend);
+    renderCustTable();
+    renderForecast(p.forecast);
+    document.getElementById("asOf").textContent =
+      `Data as of: ${DATA_AS_OF.day} ${MONTHS[DATA_AS_OF.month-1]} ${DATA_AS_OF.year} 08:30`;
+    body.classList.remove("content-loading");
+  };
+  if (flash){ body.classList.add("content-loading"); setTimeout(run, 200); }
+  else run();
+}
+
+/* =========================================================================
+ * 6. FILTER UI  (single-select for Month / Compare / Range; multi for dims)
+ * ========================================================================= */
+const CHEVRON = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4"><path d="M6 9l6 6 6-6"/></svg>';
+document.addEventListener("mousedown", e => { document.querySelectorAll(".filter-field").forEach(f => { if (!f.contains(e.target)) f.querySelector(".popover")?.classList.remove("open"); }); });
+document.addEventListener("keydown", e => { if (e.key === "Escape") document.querySelectorAll(".popover.open").forEach(p => p.classList.remove("open")); });
+
+function buildSingle(field, label, options, getVal, setVal){
+  field.innerHTML = `<label>${field.querySelector("label")?.innerHTML || label}</label>
+    <button type="button" class="summary-btn"><span class="summary-text"></span>${CHEVRON}</button>
+    <div class="popover"><div class="option-list"></div></div>`;
+  const btn = field.querySelector(".summary-btn");
+  const txt = field.querySelector(".summary-text");
+  const pop = field.querySelector(".popover");
+  const list = field.querySelector(".option-list");
+  function paint(){
+    const v = getVal();
+    const cur = options.find(o => o.value === v);
+    txt.textContent = cur ? cur.label : "–";
+    list.innerHTML = options.map(o => `<div class="option-row ${o.value===v?"selected":""}" data-v="${o.value}">${o.label}</div>`).join("");
+  }
+  btn.addEventListener("click", () => { const willOpen = !pop.classList.contains("open"); document.querySelectorAll(".popover.open").forEach(p=>p.classList.remove("open")); pop.classList.toggle("open", willOpen); });
+  list.addEventListener("click", e => {
+    const row = e.target.closest(".option-row"); if (!row) return;
+    setVal(row.dataset.v); pop.classList.remove("open");
+  });
+  paint();
+  return { paint };
+}
+
+function buildMulti(field, label, options, key){
+  field.innerHTML = `<label>${label}</label>
+    <button type="button" class="summary-btn"><span class="summary-text"></span>${CHEVRON}</button>
+    <div class="popover">
+      ${options.length > 8 ? '<input type="text" class="search" placeholder="Search…">' : ""}
+      <label class="option-row"><input type="checkbox" class="all-check"> All</label>
+      <div class="option-list"></div>
+    </div>`;
+  const btn = field.querySelector(".summary-btn");
+  const txt = field.querySelector(".summary-text");
+  const pop = field.querySelector(".popover");
+  const search = field.querySelector(".search");
+  const allChk = field.querySelector(".all-check");
+  const list = field.querySelector(".option-list");
+  function sel(){ return state[key]; }
+  function paint(){
+    const s = sel();
+    const term = (search && search.value.trim().toLowerCase()) || "";
+    const vis = term ? options.filter(o => o.toLowerCase().includes(term)) : options;
+    list.innerHTML = vis.length
+      ? vis.map(o => `<label class="option-row"><input type="checkbox" value="${o}" ${s.includes(o)?"checked":""}> ${o}</label>`).join("")
+      : `<div class="empty-state">No matches</div>`;
+    allChk.checked = s.length === 0;
+    txt.textContent = s.length === 0 ? "All" : s.length === 1 ? s[0] : `${s.length} selected`;
+  }
+  btn.addEventListener("click", () => { const willOpen = !pop.classList.contains("open"); document.querySelectorAll(".popover.open").forEach(p=>p.classList.remove("open")); pop.classList.toggle("open", willOpen); if (willOpen && search){ search.value=""; search.focus(); } });
+  list.addEventListener("change", e => {
+    if (e.target.tagName !== "INPUT") return;
+    const v = e.target.value, s = sel();
+    state[key] = s.includes(v) ? s.filter(x => x !== v) : [...s, v];
+    paint(); renderDashboard(true);
+  });
+  allChk.addEventListener("change", () => { state[key] = []; paint(); renderDashboard(true); });
+  if (search) search.addEventListener("input", paint);
+  paint();
+  return { paint };
+}
+
+const fieldRefs = {};
+function initDateRange(){
+  const min = dataMinISO(), max = isoOf(DATA_AS_OF);
+  const s = document.getElementById("dateStart"), e = document.getElementById("dateEnd");
+  s.min = min; s.max = max; e.min = min; e.max = max;
+  s.value = state.start; e.value = state.end;
+  function commit(){
+    let a = s.value || min, b = e.value || max;
+    if (a < min) a = min; if (a > max) a = max;
+    if (b < min) b = min; if (b > max) b = max;
+    if (a > b){ if (document.activeElement === s) b = a; else a = b; }
+    state.start = a; state.end = b;
+    s.value = a; e.value = b;
+    renderDashboard(true);
+  }
+  s.onchange = commit;
+  e.onchange = commit;
+}
+function initFilters(){
+  initDateRange();
+  fieldRefs.site = buildMulti(document.querySelector('[data-key="site"]'), "Site", META.sites, "site");
+  fieldRefs.bu = buildMulti(document.querySelector('[data-key="bu"]'), "Business Unit", META.bus, "bu");
+  fieldRefs.ae = buildMulti(document.querySelector('[data-key="ae"]'), "AE", META.aes, "ae");
+  fieldRefs.province = buildMulti(document.querySelector('[data-key="province"]'), "Province", META.provinces, "province");
+}
+function syncFields(){ Object.values(fieldRefs).forEach(r => r && r.paint && r.paint()); }
+
+document.getElementById("resetBtn").addEventListener("click", () => {
+  state = defaultState();
+  initFilters();
+  renderDashboard(true);
+});
+
+/* =========================================================================
+ * 7. FULLSCREEN PANELS
+ * ========================================================================= */
+let fsReturn = null;
+function openFs(panel){
+  const content = panel.querySelector(".panel-content");
+  fsReturn = { node:content, parent:content.parentElement, next:content.nextSibling };
+  document.getElementById("fsTitle").textContent = panel.dataset.fsTitle || "";
+  document.getElementById("fsBody").appendChild(content);
+  document.getElementById("fsBackdrop").classList.add("open");
+  requestAnimationFrame(() => Object.values(charts).forEach(c => c && c.resize()));
+}
+function closeFs(){
+  if (!fsReturn) return;
+  fsReturn.parent.insertBefore(fsReturn.node, fsReturn.next);
+  fsReturn = null;
+  document.getElementById("fsBackdrop").classList.remove("open");
+  requestAnimationFrame(() => Object.values(charts).forEach(c => c && c.resize()));
+}
+document.getElementById("fsClose").addEventListener("click", closeFs);
+document.getElementById("fsBackdrop").addEventListener("click", e => { if (e.target.id === "fsBackdrop") closeFs(); });
+document.addEventListener("keydown", e => { if (e.key === "Escape") closeFs(); });
+document.querySelectorAll("[data-expand]").forEach(b => b.addEventListener("click", () => openFs(b.closest(".panel"))));
+
+/* chart view toggles + local channel filter */
+document.getElementById("trendSeg").addEventListener("click", e => {
+  const b = e.target.closest("button"); if (!b || b.dataset.v === trendView) return;
+  trendView = b.dataset.v;
+  document.querySelectorAll("#trendSeg button").forEach(x => x.classList.toggle("active", x === b));
+  renderDashboard(false);
+});
+document.getElementById("growthSeg").addEventListener("click", e => {
+  const b = e.target.closest("button"); if (!b || b.dataset.v === growthView) return;
+  growthView = b.dataset.v;
+  document.querySelectorAll("#growthSeg button").forEach(x => x.classList.toggle("active", x === b));
+  renderDashboard(false);
+});
+document.getElementById("custChannel").addEventListener("change", e => {
+  custChannel = e.target.value;
+  renderCustTable();
+});
+
+/* =========================================================================
+ * 8. SQLITE IMPORT / EXPORT  (sql.js — SQLite compiled to WASM, lazy-loaded)
+ * ========================================================================= */
+const SQLITE_CDN = "https://cdnjs.cloudflare.com/ajax/libs/sql.js/1.10.2/";
+let sqlPromise = null;
+function getSQL(){
+  if (!sqlPromise){
+    if (typeof initSqlJs !== "function"){
+      return Promise.reject(new Error("sql.js library did not load (offline?)"));
+    }
+    sqlPromise = initSqlJs({ locateFile: f => SQLITE_CDN + f });
+  }
+  return sqlPromise;
+}
+function setDataStatus(text, tone){
+  const el = document.getElementById("dataStatus");
+  el.textContent = text;
+  el.className = "data-status" + (tone ? " " + tone : "");
+}
+
+const TXN_COLS = ["year","month","day","week","site","business_unit","ae","province","channel","customer","product","amount"];
+const TGT_COLS = ["year","month","site","business_unit","ae","province","amount"];
+
+async function downloadSqlite(){
+  setDataStatus("Preparing SQLite…", "busy");
+  try {
+    const SQL = await getSQL();
+    const db = new SQL.Database();
+    db.run(`
+      CREATE TABLE txn (${TXN_COLS.map(c => c + (c==="amount"?" REAL":(["site","business_unit","ae","province","channel","customer","product"].includes(c)?" TEXT":" INTEGER"))).join(", ")});
+      CREATE TABLE target (${TGT_COLS.map(c => c + (c==="amount"?" REAL":(["site","business_unit","ae","province"].includes(c)?" TEXT":" INTEGER"))).join(", ")});
+      CREATE TABLE meta (key TEXT, value TEXT);
+    `);
+    db.run("BEGIN");
+    const st = db.prepare(`INSERT INTO txn VALUES (${TXN_COLS.map(()=>"?").join(",")})`);
+    for (const r of TXN_ROWS) st.run([r.year, r.month, r.day, r.week, r.site, r.bu, r.ae, r.province, r.channel, r.customer, r.product, r.amount]);
+    st.free();
+    const st2 = db.prepare(`INSERT INTO target VALUES (${TGT_COLS.map(()=>"?").join(",")})`);
+    for (const r of TARGET_ROWS) st2.run([r.year, r.month, r.site, r.bu, r.ae, r.province, r.amount]);
+    st2.free();
+    const st3 = db.prepare("INSERT INTO meta VALUES (?,?)");
+    st3.run(["data_as_of", `${DATA_AS_OF.year}-${String(DATA_AS_OF.month).padStart(2,"0")}-${String(DATA_AS_OF.day).padStart(2,"0")}`]);
+    st3.run(["generated_at", new Date().toISOString()]);
+    st3.run(["source", "sales-dashboard-mockup"]);
+    st3.free();
+    db.run("COMMIT");
+    const bytes = db.export();
+    db.close();
+    const blob = new Blob([bytes], { type: "application/x-sqlite3" });
+    const a = document.createElement("a");
+    a.href = URL.createObjectURL(blob);
+    a.download = "sales-dashboard.sqlite";
+    document.body.appendChild(a); a.click(); a.remove();
+    setTimeout(() => URL.revokeObjectURL(a.href), 4000);
+    setDataStatus(`Downloaded sales-dashboard.sqlite · ${TXN_ROWS.length.toLocaleString()} rows`, "ok");
+  } catch (err){
+    setDataStatus("Download failed: " + err.message, "error");
+  }
+}
+
+function readAll(db, sql){
+  const res = db.exec(sql);
+  if (!res.length) return [];
+  const { columns, values } = res[0];
+  return values.map(row => Object.fromEntries(row.map((v, i) => [columns[i], v])));
+}
+const norm = h => String(h).toLowerCase().replace(/[^a-z0-9]/g, "");
+const TXN_ALIAS = { year:"year", month:"month", day:"day", week:"week", site:"site", businessunit:"bu", bu:"bu", ae:"ae", province:"province", channel:"channel", customer:"customer", product:"product", amount:"amount", sales:"amount", salesthb:"amount" };
+const TGT_ALIAS = { year:"year", month:"month", site:"site", businessunit:"bu", bu:"bu", ae:"ae", province:"province", amount:"amount", target:"amount", plan:"amount" };
+
+function mapRows(raw, alias){
+  return raw.map(o => {
+    const rec = {};
+    for (const [k, v] of Object.entries(o)){ const f = alias[norm(k)]; if (f) rec[f] = v; }
+    return rec;
+  });
+}
+
+async function importSqlite(file){
+  setDataStatus(`Reading ${file.name}…`, "busy");
+  try {
+    const SQL = await getSQL();
+    const buf = new Uint8Array(await file.arrayBuffer());
+    const db = new SQL.Database(buf);
+
+    const tables = readAll(db, "SELECT name FROM sqlite_master WHERE type='table'").map(r => r.name.toLowerCase());
+    if (!tables.includes("txn")) throw new Error("no 'txn' table found in database");
+
+    let txn = mapRows(readAll(db, "SELECT * FROM txn"), TXN_ALIAS);
+    let tgt = tables.includes("target") ? mapRows(readAll(db, "SELECT * FROM target"), TGT_ALIAS) : [];
+
+    let asof = null;
+    if (tables.includes("meta")){
+      const m = readAll(db, "SELECT value FROM meta WHERE key='data_as_of'")[0];
+      if (m && m.value) asof = m.value;
+    }
+    db.close();
+
+    // validate + coerce txn
+    txn = txn.map(r => ({
+      year:+r.year, month:+r.month,
+      day: r.day != null ? +r.day : 1,
+      site:(r.site??"Unspecified")+"", bu:(r.bu??"Unspecified")+"", ae:(r.ae??"Unspecified")+"",
+      province:(r.province??"Unspecified")+"", channel:(r.channel??"Others")+"",
+      customer:(r.customer??"Unspecified")+"", product:(r.product??"Unspecified")+"",
+      amount:+r.amount,
+    })).filter(r => Number.isFinite(r.year) && r.month>=1 && r.month<=12 && Number.isFinite(r.amount));
+    if (!txn.length) throw new Error("'txn' table has no valid rows (need year, month, amount)");
+    txn.forEach(r => { r.week = weekOf(Math.min(31, Math.max(1, r.day))); if (!SITE_PROVINCE[r.site] && r.province) SITE_PROVINCE[r.site] = r.province; });
+
+    tgt = tgt.map(r => ({
+      year:+r.year, month:+r.month,
+      site:(r.site??"Unspecified")+"", bu:(r.bu??"Unspecified")+"", ae:(r.ae??"Unspecified")+"",
+      province:(r.province??"Unspecified")+"", amount:+r.amount,
+    })).filter(r => Number.isFinite(r.year) && r.month>=1 && r.month<=12 && Number.isFinite(r.amount));
+
+    // data-as-of: from meta, else infer from the latest txn row
+    if (asof && /^\d{4}-\d{2}-\d{2}$/.test(asof)){
+      const [y,m,d] = asof.split("-").map(Number);
+      DATA_AS_OF = { year:y, month:m, day:d };
+    } else {
+      let y = Math.max(...txn.map(r => r.year));
+      let m = Math.max(...txn.filter(r => r.year === y).map(r => r.month));
+      let d = Math.max(...txn.filter(r => r.year === y && r.month === m).map(r => r.day));
+      DATA_AS_OF = { year:y, month:m, day:d };
+    }
+
+    // if the file has no target table, synthesise a flat plan from actuals
+    if (!tgt.length){
+      const byKey = new Map();
+      for (const r of txn){
+        const k = [r.year, r.month, r.site, r.bu, r.ae, r.province].join("|");
+        byKey.set(k, (byKey.get(k)||0) + r.amount);
+      }
+      tgt = [...byKey.entries()].map(([k, v]) => {
+        const [year, month, site, bu, ae, province] = k.split("|");
+        return { year:+year, month:+month, site, bu, ae, province, amount: v / 1.08 };
+      });
+    }
+
+    TXN_ROWS = txn;
+    TARGET_ROWS = tgt;
+    META = deriveMeta();
+    computeCustomerBase();
+    state = defaultState();
+    initFilters();
+    renderDashboard(true);
+
+    const badge = document.getElementById("mockBadge");
+    badge.textContent = "SQLite data loaded";
+    badge.classList.add("is-live");
+    setDataStatus(`Loaded ${file.name} · ${txn.length.toLocaleString()} txn rows · as of ${DATA_AS_OF.day} ${MONTHS[DATA_AS_OF.month-1]} ${DATA_AS_OF.year}`, "ok");
+  } catch (err){
+    setDataStatus("Import failed: " + err.message, "error");
+  }
+}
+
+document.getElementById("importBtn").addEventListener("click", () => document.getElementById("sqliteInput").click());
+document.getElementById("downloadBtn").addEventListener("click", downloadSqlite);
+document.getElementById("exportBtn").addEventListener("click", downloadSqlite);
+document.getElementById("sqliteInput").addEventListener("change", e => {
+  const f = e.target.files[0];
+  if (f) importSqlite(f);
+  e.target.value = "";
+});
+
+/* ---------------------- boot ---------------------- */
+computeCustomerBase();
+initFilters();
+renderDashboard(false);
+</script>
+</body>
+</html>

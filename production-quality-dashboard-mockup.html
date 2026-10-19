@@ -1,0 +1,1353 @@
+<!DOCTYPE html>
+<html lang="th">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Production &amp; Quality Report — Dashboard (mockup)</title>
+<!--
+  Self-contained mockup (no backend). Data lives in an in-browser SQLite DB (sql.js / WASM); every KPI / table / chart is a SQL query.
+  Input = Excel workbook with sheets Coming / Invoice / Target (see data-model-and-import-spec.md). Site = Branch (no Branch/Master).
+
+  Measures   Fixed per Block, no user toggle: B1/B2/B3 = Sales (SUM(Amount), negatives included). B4 = Case,
+             from tbl_Coming only, never Sales — but the counting UNIT differs by graph within B4, see below.
+             Target has Amount only.
+  P-Group    Restricted to FIX / RPD / ORT / HTC everywhere — Global Filter Bar, Block 1 cards, and every query
+             via the base p_group IN (...) clause in W() (the single, central query-builder every Block uses).
+             tbl_Coming may still contain stray/mistyped P_Group values (DS, IOS, ICHARM, SERVICE, NON-CAL,
+             "3D SLEEP", ...) from the source file; they are kept in the raw SQLite table (not dropped at
+             import) but never surfaced by any query, chart, card or filter option.
+  Blocks     B1/B2/B3 Coming = Sales_Order_Pool in (ET-FN, New, RM-CR) and Order_Status <> Canceled; Target (MTD) is
+             fixed to month-start(Data as of)..Data as of, independent of the Date filter.
+             B4 never touches tbl_Invoice, all from tbl_Coming with Unit_Cal='Cal', no Sales_Order_Pool
+             restriction. Coming = Order_Status <> Canceled; Invoice (graph 1) = Order_Status = Invoiced.
+             Graph 2's denominator is the SAME Coming (Order_Status <> Canceled, Invoiced included) as graph
+             1's left-hand side, so both graphs share one Coming figure and % Invoice/Coming stays 0–100%.
+             Counting unit (decided in chat, real Orders can span several Coming lines): graph 1 (Coming vs
+             Invoice by Site) and graph 2 (% Invoice/Coming Daily) = COUNT(DISTINCT Order_No); graph 3 (Order
+             Type by P-Group) and graph 4 (Order Status) = COUNT(*) (line count) — so graph 1/2's totals are
+             NOT comparable to graph 3/4's totals, on purpose. Graph 3 groups by Sales_Order_Type (NEW /
+             Try-in / Finish / Remake), a separate real source column from Sales_Order_Pool (raw codes like
+             New / ET-FN / RM-CR) — not derived from it.
+Filtering  G = Filter bar, X = clicks on rows / bars; every widget applies G AND X (a widget skips the X dimension it lists).
+             A filter the source table does not have (e.g. Subcategory on Target, Sales Order Pool on Invoice) makes that source's value "–".
+             Totals are true DISTINCT counts, so P-Group columns can add up to slightly more than the total (an order can span P-Groups).
+-->
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Sarabun:wght@400;500;600;700;800&family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.4/dist/chart.umd.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/sql.js@1.10.3/dist/sql-wasm.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
+<style>
+  :root{
+    --p-900:#153a72; --p-800:#1F4E96; --p-700:#2f6bb8; --p-600:#4b86d0;
+    --p-500:#7fb0e6; --p-400:#a9cbef; --p-300:#d3e4f6; --p-200:#e3eefb;
+    --p-100:#eef5fc; --p-50:#f6faff;
+    --gold-700:#9f7a24; --gold-300:#e8d6a7; --gold-100:#fbf7ed;
+    --success:#16a34a; --success-bg:#dcfce7; --warning:#f59e0b; --error:#dc2626; --error-bg:#fee2e2;
+    --page-bg:#f6f8fb; --surface:#ffffff; --field-bg:#f0f3f7;
+    --border:#dde5ed; --border-soft:#e9eef4;
+    --text-900:#1e293b; --text-600:#64748b; --text-400:#a0aec0;
+    --radius-sm:6px; --radius-md:8px; --radius-lg:12px;
+    --shadow-sm:0 1px 3px rgba(31,78,150,.08);
+    --shadow-md:0 8px 24px rgba(31,78,150,.1);
+    --shadow-lg:0 24px 48px rgba(31,78,150,.16);
+    --font-body:'Sarabun',sans-serif; --font-ui:'Inter',sans-serif;
+  }
+  *{box-sizing:border-box;}
+  html,body{margin:0;padding:0;min-height:100%;}
+  body{font-family:var(--font-body);color:var(--text-900);background:var(--page-bg);-webkit-font-smoothing:antialiased;}
+  h1,h2,h3{font-family:var(--font-body);}
+  button,input,select{font-family:inherit;}
+  button{cursor:pointer;}
+  svg{display:block;}
+  table{border-collapse:collapse;}
+  .hidden{display:none!important;}
+  .wrap{max-width:1600px;margin:0 auto;padding:16px 28px 60px;}
+
+  /* ---------------------- page header ---------------------- */
+  .page-head{display:flex;align-items:center;justify-content:space-between;gap:16px;flex-wrap:wrap;background:var(--p-800);color:#fff;border-radius:var(--radius-lg);padding:12px 22px;box-shadow:var(--shadow-sm);}
+  .page-head h1{margin:0;font-size:23px;font-weight:700;letter-spacing:.2px;}
+  .mock-badge{display:inline-flex;align-items:center;margin-left:12px;padding:2px 9px;border-radius:20px;background:var(--gold-100);border:1px solid var(--gold-300);color:var(--gold-700);font-family:var(--font-ui);font-size:10px;font-weight:700;letter-spacing:.03em;text-transform:uppercase;vertical-align:4px;}
+  .head-actions{display:flex;align-items:center;gap:10px;flex-wrap:wrap;}
+  .asof{display:inline-flex;align-items:center;gap:7px;font-family:var(--font-ui);font-size:12.5px;font-weight:600;}
+  .asof svg{width:15px;height:15px;}
+  .page-head .asof{margin-right:6px;}
+  .btn{display:inline-flex;align-items:center;gap:6px;border-radius:9px;padding:0 14px;font-size:13px;font-weight:700;height:36px;box-shadow:var(--shadow-sm);transition:background .15s,border-color .15s;border:1px solid var(--border);background:var(--surface);color:var(--text-900);white-space:nowrap;}
+  .btn svg{width:14px;height:14px;}
+  .btn:hover{background:var(--p-50);}
+  .btn.primary{background:var(--surface);color:var(--p-800);border-color:var(--surface);}
+  .btn.primary:hover{background:var(--p-100);}
+  .btn.ghost{background:transparent;color:#fff;border-color:rgba(255,255,255,.45);box-shadow:none;}
+  .btn.ghost:hover{background:rgba(255,255,255,.12);}
+  .btn.on{border-color:var(--p-800);color:var(--p-800);background:var(--p-100);}
+  .badge{display:inline-flex;align-items:center;justify-content:center;min-width:18px;height:18px;padding:0 5px;border-radius:9px;background:var(--p-800);color:#fff;font-family:var(--font-ui);font-size:10.5px;font-weight:800;}
+
+  /* ---------------------- data banner ---------------------- */
+  .banner{display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin:10px 0 0;padding:7px 16px;border-radius:10px;background:var(--gold-100);border:1px solid var(--gold-300);color:var(--gold-700);font-size:12.5px;font-weight:600;}
+  .banner.live{background:var(--success-bg);border-color:#bbf7d0;color:#15803d;}
+  .banner.err{background:var(--error-bg);border-color:#fecaca;color:#b91c1c;white-space:pre-line;}
+  .banner .b-text{flex:1;min-width:240px;}
+  .banner .b-btn{background:transparent;border:1px solid currentColor;color:inherit;border-radius:20px;padding:2px 11px;font-size:11.5px;font-weight:700;font-family:var(--font-ui);}
+  .banner details{width:100%;font-weight:500;font-size:12px;}
+  .banner summary{cursor:pointer;font-weight:700;}
+  .banner ul{margin:4px 0 0;padding-left:18px;}
+
+  /* ---------------------- filter bar ---------------------- */
+  .controls{position:sticky;top:0;z-index:40;margin:10px -8px 14px;padding:8px 8px 6px;background:rgba(246,248,251,.95);backdrop-filter:blur(6px);border-bottom:1px solid var(--border);}
+  .ctl-row{display:flex;gap:8px;align-items:flex-end;flex-wrap:wrap;}
+  .filter-field{background:var(--surface);border:1px solid var(--border);border-radius:9px;padding:4px 10px;box-shadow:var(--shadow-sm);min-height:44px;}
+  .filter-field label{display:block;font-size:10.5px;color:var(--text-400);line-height:1.3;}
+  .filter-field select,.filter-field input[type=date]{border:none;background:transparent;padding:0;font-family:var(--font-ui);font-size:12.5px;font-weight:600;color:var(--text-900);outline:none;cursor:pointer;}
+  .filter-field select{min-width:96px;}
+  .filter-field input[type=date]{width:112px;}
+  .dr{display:flex;align-items:center;gap:5px;color:var(--text-400);}
+  .seg{display:inline-flex;gap:2px;background:var(--field-bg);border:1px solid var(--border);border-radius:20px;padding:2px;margin-top:1px;}
+  .seg button{border:none;background:transparent;font-family:var(--font-ui);font-size:11.5px;font-weight:700;padding:2px 11px;border-radius:20px;color:var(--text-600);}
+  .seg button.on{background:var(--p-800);color:#fff;}
+  .seg button:not(.on):hover{color:var(--p-700);}
+  .adv-wrap{position:relative;}
+  .adv-wrap .btn{height:44px;}
+  .adv{position:absolute;top:calc(100% + 6px);right:0;z-index:50;width:340px;background:var(--surface);border:1px solid var(--border);border-radius:12px;box-shadow:var(--shadow-lg);padding:14px 16px;}
+  .adv h4{margin:0 0 6px;font-family:var(--font-ui);font-size:11px;font-weight:800;text-transform:uppercase;letter-spacing:.3px;color:var(--p-900);}
+  .adv .hint{font-size:11px;color:var(--text-400);margin:4px 0 0;}
+  .adv .grp{margin-bottom:14px;}
+  .adv select{width:100%;height:32px;border:1px solid var(--border);border-radius:8px;font-family:var(--font-ui);font-size:12.5px;padding:0 8px;background:var(--surface);}
+  .chips-toggle{display:flex;flex-wrap:wrap;gap:6px;}
+  .chips-toggle button{border:1px solid var(--border);background:var(--surface);border-radius:20px;padding:3px 12px;font-family:var(--font-ui);font-size:11.5px;font-weight:700;color:var(--text-600);}
+  .chips-toggle button.on{background:var(--p-800);border-color:var(--p-800);color:#fff;}
+  .active-row{display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-top:6px;font-size:12px;min-height:26px;}
+  .active-row .al{display:inline-flex;align-items:center;gap:6px;font-family:var(--font-ui);font-size:11px;font-weight:800;text-transform:uppercase;letter-spacing:.3px;color:var(--p-900);}
+  .active-row .al svg{width:13px;height:13px;}
+  .active-row .none{color:var(--text-400);font-size:11.5px;}
+  .chip{display:inline-flex;align-items:center;gap:6px;background:var(--p-800);color:#fff;border-radius:20px;padding:2px 5px 2px 12px;font-family:var(--font-ui);font-size:11.5px;font-weight:700;}
+  .chip b{font-weight:500;opacity:.8;}
+  .chip.alt{background:var(--p-100);color:var(--p-800);border:1px solid var(--p-300);}
+  .chip button{width:18px;height:18px;border-radius:50%;border:none;background:rgba(255,255,255,.22);color:inherit;display:flex;align-items:center;justify-content:center;padding:0;}
+  .chip.alt button{background:var(--p-200);}
+  .chip button:hover{background:rgba(255,255,255,.4);}
+  .chip button svg{width:10px;height:10px;}
+  .clear-btn{margin-left:4px;background:var(--surface);border:1px solid var(--p-300);color:var(--p-800);border-radius:20px;padding:3px 12px;font-family:var(--font-ui);font-size:11.5px;font-weight:700;}
+  .clear-btn:hover{background:var(--p-100);}
+
+  /* ---------------------- section frames ---------------------- */
+  .sec{background:var(--p-50);border:1px solid var(--p-300);border-radius:var(--radius-lg);padding:12px 14px 14px;margin-bottom:18px;}
+  .sec-head{display:flex;align-items:center;gap:14px;flex-wrap:wrap;margin-bottom:10px;min-height:30px;}
+  .sec-head h2{margin:0;font-size:18px;font-weight:700;color:var(--p-800);}
+  .sec-head .sp{flex:1;}
+  .sec-head .asof{color:var(--p-800);font-size:11.5px;}
+  .sec-head .asof svg{width:14px;height:14px;}
+  .bctl{display:inline-flex;align-items:center;gap:7px;font-family:var(--font-ui);font-size:12px;font-weight:700;color:var(--p-800);}
+  .bctl select{height:28px;min-width:120px;border:1px solid var(--p-300);border-radius:8px;background:var(--surface);font-family:var(--font-ui);font-size:12px;font-weight:600;color:var(--text-900);padding:0 8px;}
+  .bctl select.active{border-color:var(--p-800);background:var(--p-100);}
+
+  .row{display:grid;gap:14px;margin-bottom:14px;}
+  .row:last-child{margin-bottom:0;}
+  .panel{position:relative;background:var(--surface);border:1px solid var(--border);border-radius:var(--radius-lg);box-shadow:var(--shadow-sm);padding:14px 16px;min-width:0;}
+  .panel h2{margin:0 0 10px;font-size:12.5px;font-weight:800;color:var(--p-900);letter-spacing:.2px;text-transform:uppercase;font-family:var(--font-ui);}
+  .panel h2 span{font-weight:500;text-transform:none;color:var(--text-400);font-size:11.5px;}
+  .panel h2 .u{font-weight:600;color:var(--p-700);}
+  .panel-head{display:flex;align-items:center;justify-content:space-between;gap:8px;margin-bottom:8px;}
+  .panel-head h2{margin:0;}
+  .chart-wrap{position:relative;height:300px;}
+  .chart-wrap.sm{height:260px;}
+  .note-line{margin:10px 0 0;font-size:11.5px;line-height:1.55;color:var(--text-600);}
+  .note-line b{color:var(--p-900);}
+
+  /* ---------------------- Block 1 : overview ---------------------- */
+  .ov{display:grid;grid-template-columns:minmax(250px,1fr) 3fr;gap:12px;}
+  .grp-row{display:grid;grid-template-columns:repeat(auto-fit,minmax(190px,1fr));gap:12px;}
+  .kcard{background:var(--surface);border:1px solid var(--p-300);border-radius:var(--radius-lg);box-shadow:var(--shadow-sm);padding:14px 16px;cursor:pointer;transition:box-shadow .18s,transform .18s,border-color .18s,opacity .18s;min-width:0;}
+  .kcard:hover{border-color:var(--p-400);box-shadow:var(--shadow-md);transform:translateY(-2px);}
+  .kcard.sel{border-color:var(--p-800);box-shadow:0 0 0 2px var(--p-800),var(--shadow-md);}
+  .kcard.dim{opacity:.5;}
+  .kname{font-family:var(--font-ui);font-size:14px;font-weight:800;color:var(--p-900);margin-bottom:8px;display:flex;align-items:center;gap:8px;}
+  .kname .kd{width:9px;height:9px;border-radius:50%;}
+  .kgrid{display:grid;grid-template-columns:1fr 1fr;gap:10px;}
+  .kv{font-family:var(--font-ui);font-size:19px;font-weight:800;line-height:1.25;}
+  .kl{font-size:12px;color:var(--text-600);}
+  .kach{font-family:var(--font-ui);font-size:22px;font-weight:800;margin-top:8px;line-height:1.2;}
+  .kfull{font-family:var(--font-ui);font-size:10.5px;font-weight:600;color:var(--text-600);margin-top:6px;}
+  .kcard.total .kfull{color:rgba(255,255,255,.8);}
+  .prog{height:6px;border-radius:3px;background:var(--field-bg);margin-top:8px;overflow:hidden;}
+  .prog i{display:block;height:100%;border-radius:3px;}
+  .kcard.total{background:var(--p-800);border-color:var(--p-800);color:#fff;display:flex;flex-direction:column;justify-content:center;}
+  .kcard.total .kname{color:#fff;margin-bottom:10px;flex-wrap:wrap;}
+  .kcard.total .kl{color:rgba(255,255,255,.75);}
+  .kcard.total .ksub{font-size:10.5px;font-weight:500;opacity:.75;font-family:var(--font-body);}
+  .kcard.total .kv.hero{font-size:32px;line-height:1.1;}
+  .kcard.total .kach{font-size:26px;}
+  .kcard.total .prog{background:rgba(255,255,255,.2);}
+  .t-red{color:#dc2626;} .t-pink{color:#d6336c;} .t-yellow{color:#d99100;} .t-green{color:#16a34a;}
+  .kcard.total .t-red{color:#ff9c99;} .kcard.total .t-pink{color:#ffb3cc;} .kcard.total .t-yellow{color:#ffd66b;} .kcard.total .t-green{color:#86efac;}
+  .strip{display:grid;grid-template-columns:repeat(2,1fr);gap:12px;margin-top:12px;}
+  .tile{background:var(--surface);border:1px solid var(--border);border-radius:var(--radius-lg);box-shadow:var(--shadow-sm);padding:10px 16px;display:flex;align-items:center;gap:12px;min-width:0;}
+  .tile .ti{width:34px;height:34px;min-width:34px;border-radius:50%;background:var(--p-100);color:var(--p-800);display:flex;align-items:center;justify-content:center;}
+  .tile .ti svg{width:16px;height:16px;}
+  .tile .tl{font-size:11.5px;color:var(--text-600);}
+  .tile .tv{font-family:var(--font-ui);font-size:18px;font-weight:800;line-height:1.25;}
+  .tile .ts{font-family:var(--font-ui);font-size:10.5px;font-weight:600;color:var(--text-400);}
+
+  /* ---------------------- tables ---------------------- */
+  .tbl-wrap{overflow:auto;max-height:400px;border:1px solid var(--border-soft);border-radius:8px;}
+  .tbl-wrap.tall{max-height:380px;}
+  .dt{width:100%;font-family:var(--font-ui);font-size:11.5px;font-weight:600;color:#1c2536;}
+  .dt th{position:sticky;top:0;z-index:2;background:var(--surface);color:var(--text-600);font-size:10.5px;font-weight:700;padding:7px 10px;text-align:center;border-bottom:1px solid var(--border);white-space:nowrap;}
+  .dt th.h2r{top:30px;}
+  .dt th.l,.dt td.l{text-align:left;}
+  .dt th.top{z-index:3;}
+  /* .freeze-col: sticky first (Date/label) column, for tables wide enough to need horizontal scroll */
+  .dt.freeze-col th.l{position:sticky;left:0;z-index:4;}
+  .dt.freeze-col td.l{position:sticky;left:0;z-index:1;background:var(--surface);}
+  .dt.freeze-col tbody tr:nth-child(even) td.l{background:var(--p-50);}
+  .dt.freeze-col tr.sel td.l{background:var(--p-200);}
+  .dt.freeze-col tfoot td.l{left:0;z-index:5;}
+  .dt td{padding:7px 10px;text-align:center;border-bottom:1px solid var(--border-soft);white-space:nowrap;font-variant-numeric:tabular-nums;}
+  .dt td.l{font-weight:600;}
+  .dt td .sub{color:var(--text-400);font-weight:500;font-size:10px;margin-left:5px;}
+  .dt tbody tr:nth-child(even) td{background:var(--p-50);}
+  .dt tfoot td{position:sticky;bottom:0;background:var(--p-100);font-weight:800;border-top:2px solid var(--border);}
+  .dt .gb{border-left:2px solid var(--border);}
+  .dt tr.clk,.dt td.clk,.dt th.clk{cursor:pointer;}
+  .dt tr.clk:hover td{background:var(--p-100);}
+  .dt th.clk:hover{color:var(--p-800);background:var(--p-100);}
+  .dt td.gsel{background:var(--p-100);}
+  .dt th.gsel{background:var(--p-200);color:var(--p-900);}
+  .dt th.off,.dt td.off{opacity:.4;}
+  .dt tr.sel td{background:var(--p-200);box-shadow:inset 0 2px 0 var(--p-800),inset 0 -2px 0 var(--p-800);}
+  .dt tr.sel td:first-child{box-shadow:inset 0 2px 0 var(--p-800),inset 0 -2px 0 var(--p-800),inset 3px 0 0 var(--p-800);}
+  .dt tr.sel td:last-child{box-shadow:inset 0 2px 0 var(--p-800),inset 0 -2px 0 var(--p-800),inset -2px 0 0 var(--p-800);}
+  .dt td.empty{color:var(--text-400);font-weight:500;padding:22px;font-size:12px;font-family:var(--font-body);}
+  /* conditional colours (% columns) */
+  .c-red{background:#f4a6a3!important;color:#7f1d1d;} .c-pink{background:#fcd3df!important;color:#9d174d;}
+  .c-yellow{background:#fdeeb0!important;color:#7a5b00;} .c-green{background:#c9ecd3!important;color:#1c6b3f;}
+  .r-good{background:#c9ecd3!important;color:#1c6b3f;} .r-ok{background:#fdeeb0!important;color:#7a5b00;}
+  .r-warn{background:#f9d0a4!important;color:#8a4b08;} .r-bad{background:#f4a6a3!important;color:#7f1d1d;}
+  .legend{display:flex;flex-wrap:wrap;gap:6px 12px;font-family:var(--font-ui);font-size:10.5px;color:var(--text-600);margin-top:10px;align-items:center;}
+  .legend i{display:inline-block;width:11px;height:11px;border-radius:3px;vertical-align:-2px;margin-right:4px;}
+  .pgdot{display:inline-block;width:8px;height:8px;border-radius:50%;margin-right:6px;}
+
+  /* Block 4 : order status tiles */
+  .stack100{display:flex;height:12px;border-radius:6px;overflow:hidden;background:var(--field-bg);margin:2px 0 14px;}
+  .stack100 i{display:block;height:100%;}
+  .st-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:10px;}
+  .st{border:1px solid var(--border);border-left-width:4px;border-radius:10px;padding:10px 12px;background:var(--surface);}
+  .st .stn{font-size:11.5px;color:var(--text-600);}
+  .st .stv{font-family:var(--font-ui);font-size:19px;font-weight:800;line-height:1.3;}
+  .st .stp{font-family:var(--font-ui);font-size:12px;font-weight:700;color:var(--text-600);}
+
+
+  /* ---------------------- grids ---------------------- */
+  .g-b2{grid-template-columns:1.6fr 1fr;}
+  .g-b3a{grid-template-columns:1fr 1.5fr;}
+  .g-b4a,.g-b4b{grid-template-columns:1.15fr 1fr;}
+  @media (max-width:1300px){
+    .g-b2,.g-b3a,.g-b4a,.g-b4b{grid-template-columns:1fr;}
+    .ov{grid-template-columns:1fr;}
+  }
+  @media (max-width:1100px){ .controls{position:static;} .adv{right:auto;left:0;} }
+  @media (max-width:800px){
+    .wrap{padding:12px 14px 40px;}
+    .page-head h1{font-size:19px;}
+    .strip{grid-template-columns:1fr;}
+    .st-grid{grid-template-columns:1fr;}
+  }
+  .loading{position:fixed;inset:0;z-index:100;background:rgba(246,248,251,.92);display:flex;align-items:center;justify-content:center;font-family:var(--font-ui);font-weight:700;color:var(--p-800);font-size:14px;}
+  .dropzone{position:fixed;inset:0;z-index:90;background:rgba(31,78,150,.82);color:#fff;display:none;align-items:center;justify-content:center;font-size:22px;font-weight:700;pointer-events:none;}
+  .dropzone.on{display:flex;}
+
+  .scope-badge{display:inline-flex;align-items:center;font-family:var(--font-ui);font-size:10px;font-weight:700;padding:2px 9px;border-radius:20px;background:var(--gold-100);border:1px solid var(--gold-300);color:var(--gold-700);white-space:nowrap;}
+  .empty-note{background:var(--surface);border:1px dashed var(--p-400);border-radius:var(--radius-lg);padding:26px 20px;text-align:center;font-size:13px;line-height:1.8;color:var(--text-600);}
+  .empty-note code{font-family:var(--font-ui);background:var(--p-100);border-radius:4px;padding:1px 5px;color:var(--p-800);font-size:12px;}
+
+  /* ---------------------- expand-to-fullscreen (every chart/table, Blocks 1-4) ---------------------- */
+  .expand-btn{position:absolute;top:10px;right:10px;z-index:6;width:26px;height:26px;border-radius:7px;border:1px solid var(--border);background:var(--surface);color:var(--text-600);display:flex;align-items:center;justify-content:center;box-shadow:var(--shadow-sm);cursor:pointer;padding:0;}
+  .expand-btn:hover{background:var(--p-100);color:var(--p-800);border-color:var(--p-400);}
+  .expand-btn svg{width:14px;height:14px;}
+  .panel.is-expanded{opacity:.35;pointer-events:none;}
+  .expand-modal{position:fixed;inset:0;z-index:300;background:rgba(15,23,42,.72);display:none;align-items:center;justify-content:center;}
+  .expand-modal.show{display:flex;}
+  /* Fixed viewport-relative box (not shrink-to-content) so the panel never floats with dead space around it */
+  .expand-modal-inner{background:var(--surface);border-radius:var(--radius-lg);box-shadow:var(--shadow-lg);width:94vw;height:92vh;padding:20px;position:relative;display:flex;flex-direction:column;}
+  .expand-close{position:absolute;top:14px;right:14px;z-index:10;width:34px;height:34px;border-radius:50%;border:1px solid var(--border);background:var(--surface);display:flex;align-items:center;justify-content:center;cursor:pointer;color:var(--text-600);padding:0;}
+  .expand-close:hover{background:var(--p-100);color:var(--p-800);}
+  .expand-close svg{width:16px;height:16px;}
+  /* #expandSlot fills all remaining height below the close-button margin; centers content that can't grow
+     (nothing here can't grow — chart-wrap/tbl-wrap below are both told to fill it) so no space is left over. */
+  #expandSlot{flex:1;min-height:0;width:100%;display:flex;align-items:stretch;justify-content:center;padding-top:8px;}
+  .expand-modal-inner .chart-wrap{width:100%;height:100%!important;}
+  .expand-modal-inner .tbl-wrap{width:100%;max-height:none!important;}
+  /* b4So/b4Status reparent a plain wrapper div (their .tbl-wrap is nested one level deeper, regenerated by
+     innerHTML each render) — make that outer div a column flex box so its own .tbl-wrap child still stretches
+     to fill the modal, same as the tables whose id IS the .tbl-wrap directly. */
+  .expand-modal-inner #expandSlot > div:not(.tbl-wrap){display:flex;flex-direction:column;width:100%;height:100%;}
+  .expand-modal-inner #expandSlot > div:not(.tbl-wrap) > .tbl-wrap{flex:1;min-height:0;}
+  /* Applied to a reparented <table> only while short on rows, via --efs (extra font scale) set in JS —
+     grows font-size AND cell padding together (not a transform, so position:sticky is unaffected) until the
+     table's own natural height fills the available modal space instead of leaving blank space below it. */
+  table.expand-scaled{font-size:calc(11.5px * var(--efs,1));}
+  table.expand-scaled th{padding:calc(7px * var(--efs,1)) calc(10px * var(--efs,1));font-size:calc(10.5px * var(--efs,1));}
+  /* Paired with .expand-scaled: even after growing the font as far as sane, a short table can still be shy of
+     the full available height — center it in the remaining space (top+bottom) instead of pinning it to the
+     top with all the leftover space stuck below. Only applied when scaled (see fitTableToModal), never to a
+     normally-scrolling tall table (centering an overflowing scroll container would clip its top content). */
+  .tbl-wrap.expand-centered{display:flex;flex-direction:column;justify-content:center;}
+  table.expand-scaled td{padding:calc(7px * var(--efs,1)) calc(10px * var(--efs,1));}
+  @media (max-width:800px){ .expand-modal-inner{width:100vw;height:100vh;border-radius:0;padding:14px;} }
+</style>
+</head>
+<body>
+<div class="loading hidden" id="loading"><span id="loadingText">กำลังโหลด sql.js (SQLite / WebAssembly)…</span></div>
+<div class="dropzone" id="dropzone">วางไฟล์ Excel (.xlsx) หรือ .sqlite เพื่อนำเข้า</div>
+
+<div class="wrap">
+  <!-- ============ header ============ -->
+  <header class="page-head">
+    <h1>Production &amp; Quality Report<span class="mock-badge" id="mockBadge">Mockup · Sample data</span></h1>
+    <div class="head-actions">
+      <span class="asof"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="18" rx="2"/><line x1="16" y1="2" x2="16" y2="6"/><line x1="8" y1="2" x2="8" y2="6"/><line x1="3" y1="10" x2="21" y2="10"/></svg>Data as of <span class="asofVal">–</span></span>
+      <button class="btn primary" id="btnImport" type="button"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>Import File</button>
+      <button class="btn ghost" id="btnDownload" type="button"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>Download SQLite</button>
+      <button class="btn ghost" id="btnTemplate" type="button" title="ดาวน์โหลด Excel Template (3 ชีต: Coming / Invoice / Target)"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/></svg>Excel Template</button>
+      <input type="file" id="fileIn" class="hidden" accept=".xlsx,.xls,.db,.sqlite,.sqlite3">
+    </div>
+  </header>
+  <div class="banner" id="banner"></div>
+
+  <!-- ============ filter bar ============ -->
+  <div class="controls">
+    <div class="ctl-row">
+      <div class="filter-field"><label>Date range</label><div class="dr"><input type="date" id="gFrom" aria-label="Date from"><span>–</span><input type="date" id="gTo" aria-label="Date to"></div></div>
+      <div class="filter-field"><label>Quick range</label><div class="seg" id="gQuick"><button data-q="7D" type="button">7D</button><button data-q="MTD" type="button">MTD</button><button data-q="ALL" type="button">All</button></div></div>
+      <div class="filter-field"><label>Site</label><select id="gSite"></select></div>
+      <div class="filter-field"><label>P-Group</label><div class="seg" id="gPg"></div></div>
+      <div class="adv-wrap">
+        <button class="btn" id="btnAdv" type="button" aria-expanded="false"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="4" y1="21" x2="4" y2="14"/><line x1="4" y1="10" x2="4" y2="3"/><line x1="12" y1="21" x2="12" y2="12"/><line x1="12" y1="8" x2="12" y2="3"/><line x1="20" y1="21" x2="20" y2="16"/><line x1="20" y1="12" x2="20" y2="3"/><line x1="1" y1="14" x2="7" y2="14"/><line x1="9" y1="8" x2="15" y2="8"/><line x1="17" y1="16" x2="23" y2="16"/></svg>More filters <span class="badge hidden" id="advBadge">0</span></button>
+        <div class="adv hidden" id="advPanel">
+          <div class="grp"><h4>Sales Order Pool</h4><div class="chips-toggle" id="gOt"></div><p class="hint">Sales Order Pool อยู่เฉพาะข้อมูล Coming — ตัวเลขจาก Invoice / Target จะแสดง "–" เมื่อเลือก</p></div>
+          <div class="grp"><h4>Subcategory</h4><select id="gSub"></select><p class="hint">ใช้กับ Coming และ Invoice — Target ไม่มีมิตินี้ (แสดง "–")</p></div>
+          <div class="grp" style="margin-bottom:0"><h4>Channel</h4><select id="gChannel"></select><p class="hint">ใช้กับ Coming และ Invoice — Target ไม่มีมิตินี้ (แสดง "–")</p></div>
+        </div>
+      </div>
+      <button class="btn" id="btnReset" type="button"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="1 4 1 10 7 10"/><path d="M3.51 15a9 9 0 1 0 2.13-9.36L1 10"/></svg>Reset</button>
+    </div>
+    <div class="active-row" id="activeRow"></div>
+  </div>
+
+  <!-- ============ 1. Overview ============ -->
+  <section class="sec" id="b1">
+    <div class="sec-head"><h2>1. Overview <span style="font-size:12px;font-weight:500;color:var(--text-600)">· Summary Cards <span class="u">· Sales (THB)</span></span></h2><span class="sp"></span><span class="scope-badge" title="เงื่อนไข Coming ของ Block 1: Sales_Order_Pool เฉพาะ ET-FN / New / RM-CR และ Order_Status ไม่ใช่ Canceled">Coming: ET-FN · New · RM-CR</span><span class="scope-badge" title="Target ทุกจุดใน Block นี้คงที่ที่ MTD (ต้นเดือนถึง Data as of) เสมอ ไม่ขึ้นกับ Date range / Quick range ด้านบน">Target (MTD): <span class="mtdAsof"></span></span><span class="scope-badge" title="ยังไม่มี Target จริง — ค่าที่แสดงเป็นข้อมูลชั่วคราวจากไฟล์">Target: ข้อมูลชั่วคราว</span></div>
+    <div class="ov"><div id="kTotal" style="display:contents"></div><div class="grp-row" id="kGroups"></div></div>
+    <div class="strip" id="kStrip"></div>
+  </section>
+
+  <!-- ============ 2. Site Performance ============ -->
+  <section class="sec" id="b2">
+    <div class="sec-head"><h2>2. Site Performance</h2><span class="scope-badge" title="Coming ใช้เงื่อนไขเดียวกับ Block 1">Coming: ET-FN · New · RM-CR</span><span class="scope-badge" title="Target ในตารางและกราฟของ Block นี้คงที่ที่ MTD (ต้นเดือนถึง Data as of) เสมอ ไม่ขึ้นกับ Date range / Quick range ด้านบน">Target (MTD): <span class="mtdAsof"></span></span><span class="sp"></span><span class="asof"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="18" rx="2"/><line x1="16" y1="2" x2="16" y2="6"/><line x1="8" y1="2" x2="8" y2="6"/><line x1="3" y1="10" x2="21" y2="10"/></svg>Data as of <span class="asofVal">–</span></span></div>
+    <div class="row g-b2">
+      <div class="panel"><h2>Site Detail <span class="u">· Sales (THB)</span></h2><div class="tbl-wrap tall" id="b2Table"></div>
+        <div class="legend"><span><i style="background:#f4a6a3"></i>&lt; 70%</span><span><i style="background:#fcd3df"></i>70–80%</span><span><i style="background:#fdeeb0"></i>80–90%</span><span><i style="background:#c9ecd3"></i>&ge; 90%</span><span style="color:var(--text-400)">· คลิกแถว Site เพื่อกรองทุก Block · "–" = ไม่มี Target ของ Site นั้น</span></div>
+      </div>
+      <div class="panel"><h2 id="b2ChartTitle">% Achievement by Site</h2><div class="chart-wrap" id="b2ChartWrap"><canvas id="cB2"></canvas></div>
+        <p class="note-line" id="b2Note"></p></div>
+    </div>
+  </section>
+
+  <!-- ============ 3. Daily / P-Group breakdown ============ -->
+  <section class="sec" id="b3">
+    <div class="sec-head"><h2>3. P-Group by Day <span style="font-size:12px;font-weight:500;color:var(--text-600)">(แยกตาม Site)</span></h2><span class="scope-badge" title="Coming ใช้เงื่อนไขเดียวกับ Block 1">Coming: ET-FN · New · RM-CR</span>
+      <label class="bctl">Site <select class="bsel" title="เชื่อมกับ Site ใน Filter Bar"></select></label>
+      <span class="sp"></span><span class="asof"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="18" rx="2"/><line x1="16" y1="2" x2="16" y2="6"/><line x1="8" y1="2" x2="8" y2="6"/><line x1="3" y1="10" x2="21" y2="10"/></svg>Data as of <span class="asofVal">–</span></span></div>
+    <div class="row g-b3a">
+      <div class="panel"><h2>Coming / Target / Invoice by P-Group <span class="u">· Sales (THB)</span></h2><span class="scope-badge" id="b3ChartBadge" title="กราฟนี้ (Coming/Target/Invoice ต่อ P-Group) คงที่ที่ MTD เสมอ ไม่ขึ้นกับ Date range / Quick range ด้านบน — ต่างจากตาราง Daily Detail ด้านล่างที่ยังตอบสนอง Date range ตามปกติ">Coming/Target/Invoice (MTD): <span class="mtdAsof"></span></span><div class="chart-wrap"><canvas id="cB3Group"></canvas></div></div>
+      <div class="panel"><h2>Daily Coming vs Invoice <span class="u">· Sales (THB)</span> <span>· คลิกแท่งเพื่อกรองตามวัน</span></h2><div class="chart-wrap"><canvas id="cB3Daily"></canvas></div></div>
+    </div>
+    <div class="row"><div class="panel"><h2>Daily Detail by P-Group <span class="u">· Sales (THB)</span></h2><div class="tbl-wrap tall" id="b3Table"></div><p class="note-line" id="b3Note"></p></div></div>
+  </section>
+
+  <!-- ============ 4. Invoice vs Coming ============ -->
+  <section class="sec" id="b4">
+    <div class="sec-head"><h2>4. Invoice vs Coming <span style="font-size:12px;font-weight:500;color:var(--text-600)">(Overall)</span></h2><span class="scope-badge" title="Block 4 ไม่ใช้ tbl_Invoice เลย — ทุกช่องมาจาก tbl_Coming ที่ Unit_Cal = &quot;Cal&quot; เท่านั้น ไม่กรอง Sales_Order_Pool และเป็น Case เสมอ (ไม่ใช่ Sales/THB) — Coming vs Invoice by Site และ % Invoice/Coming Daily นับ Order ไม่ซ้ำ (COUNT DISTINCT Order_No), ส่วน Order Type by P-Group และ Order Status นับทุกบรรทัด (COUNT บรรทัด) — หน่วยนับต่างกันโดยตั้งใจ ดูคำอธิบายในแชท">จาก Coming เท่านั้น · Unit_Cal=Cal · Case เสมอ (หน่วยนับต่างกันตามกราฟ)</span>
+      <label class="bctl">Site <select class="bsel" title="เชื่อมกับ Site ใน Filter Bar"></select></label>
+      <span class="sp"></span><span class="asof"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="18" rx="2"/><line x1="16" y1="2" x2="16" y2="6"/><line x1="8" y1="2" x2="8" y2="6"/><line x1="3" y1="10" x2="21" y2="10"/></svg>Data as of <span class="asofVal">–</span></span></div>
+    <div class="row g-b4a">
+      <div class="panel"><h2>Coming vs Invoice by Site <span>(Case · Order ไม่ซ้ำ)</span></h2><div class="chart-wrap"><canvas id="cB4Site"></canvas></div><p class="note-line">Coming = COUNT(DISTINCT Order_No) ที่ Order_Status ≠ Canceled · Invoice = COUNT(DISTINCT Order_No) ที่ Order_Status = Invoiced (นับ Order ไม่ซ้ำ, Unit_Cal = Cal) · 1 Order เฉลี่ยมีหลายบรรทัด จึงน้อยกว่าจำนวนบรรทัดจริง</p></div>
+      <div class="panel"><h2>% Invoice / Coming — Daily <span>(Case · Order ไม่ซ้ำ) · แยกตาม P-Group · คลิกจุดเพื่อกรองวัน</span></h2><div class="chart-wrap"><canvas id="cB4Trend"></canvas></div><p class="note-line"><b>สูตร:</b> Invoiced ÷ Coming (Order_Status ≠ Canceled, รวม Invoiced ในตัวหารด้วย) — Coming ตัวเดียวกับกราฟด้านซ้าย จึงไม่เกิน 100% · นับ COUNT(DISTINCT Order_No) ทั้งเศษและส่วน</p></div>
+    </div>
+    <div class="row"><div class="panel"><h2>Coming vs Invoice by P-Group — Daily <span>(Case · Order ไม่ซ้ำ)</span> <span>· คลิกแถววันที่เพื่อกรอง</span></h2><div class="tbl-wrap tall" id="b4DailyPG"></div></div></div>
+    <div class="row g-b4b">
+      <div class="panel"><h2>Order Type by P-Group <span>(Case · นับบรรทัด)</span> <span>· จาก Coming · Sales_Order_Type</span></h2><div id="b4So"></div></div>
+      <div class="panel"><h2>Order Status <span>· จาก Coming · Case · นับบรรทัด</span></h2><div id="b4Status"></div></div>
+    </div>
+  </section>
+
+</div>
+
+<!-- ============ expand-to-fullscreen modal (shared by every chart/table, Blocks 1-4) ============ -->
+<div class="expand-modal" id="expandModal">
+  <div class="expand-modal-inner" id="expandInner">
+    <button class="expand-close" id="expandCloseBtn" type="button" title="ปิด (Esc)"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg></button>
+    <div id="expandSlot"></div>
+  </div>
+</div>
+
+<script>
+/* =====================================================================
+   Constants
+   ===================================================================== */
+const PG_ORDER = ['FIX','RPD','ORT','HTC'];               // Target keeps only these P-Groups
+const PG_COLOR = {FIX:'#1E6FE0', RPD:'#FFB300', ORT:'#4CAF50', HTC:'#E8756A'};
+const EXTRA_COLORS = ['#8E63C9','#16A3A8','#5C6BC0','#F2994A'];
+const C_COMING = '#4A90E2', C_TARGET = '#9CC3F0', C_INVOICE = '#1F4E96';
+const DIM_LABEL = {site:'Site', p_group:'P-Group', date:'Date'};
+const XCOL = {site:'site', p_group:'p_group', date:'date'};
+const STATUS_ORDER = ['Invoiced','Open order','Delivered','Canceled'];
+const STATUS_COLOR = {'Invoiced':'#4A90E2', 'Open order':'#f59e0b', 'Delivered':'#3fae6a', 'Canceled':'#94a3b8'};
+const OT_ORDER = ['New','ET-FN','RM-CR'];   // shown first; any other code found in the data follows
+const TYPE_ORDER = ['NEW','Try-in','Finish','Remake'];   // Sales_Order_Type canonical display order (Block 4 "Order Type by P-Group")
+/* Block 1 counts Coming only for these Sales_Order_Pool codes (raw values from the sheet, no mapping) */
+const B1_COMING_TYPES = ['ET-FN','New','RM-CR'];
+/* Which dimensions each source table can be filtered by (a filter a source cannot honour makes its values "–") */
+const SRC = {
+  coming:{tbl:'tbl_Coming', amt:'coming_amount', dims:['date','site','p_group','sub','channel','ot']},
+  invoice:{tbl:'tbl_Invoice', amt:'invoice_amount', dims:['date','site','p_group','sub','channel']},
+  target:{tbl:'tbl_Target', amt:'target_amount', dims:['date','site','p_group']},
+};
+
+/* =====================================================================
+   Mock data (same schema as the real workbook; used until a file is imported)
+   ===================================================================== */
+const MOCK_SITES = [['CMI',1],['BKK',.37],['PLK',.32],['UDN',.14],['UBN',.10],['NMA',.10],['NRT',.07],['CRI',.07],['CBI',.07],['PKT',.03],['KKN',.012],['CU',.006]];
+const MOCK_BASE = {FIX:22, RPD:44, ORT:45};               // orders per day at weight 1
+const MOCK_ACH = {CMI:.9, BKK:.72, PLK:.95, UDN:.95, UBN:.78, NMA:.83, NRT:.72, CRI:.73, CBI:.88, PKT:.55, KKN:.73, CU:.8, SPK:.5};
+const MOCK_SUBS = {
+  FIX:[['Zircon',.30,'CBD',4200],['Implant Service',.14,'CBD',3200],['Metal With Ceramic',.14,'CBD',2600],['Lithium Disilicate',.10,'CBD',3900],['Model',.14,'CBD',450],['Full Metal Crown',.08,'CBD',1900],['Abutment & Pre-Milled',.05,'CBAB',3300],['Surgical Guide',.05,'CBD',2800]],
+  RPD:[['Service',.30,'RED',700],['Temporary Plate',.14,'RED',900],['Bite Block',.10,'RED',600],['Full Denture',.10,'RED',3800],['Cocr',.10,'RED',3300],['Special Tray',.08,'RED',500],['Teeth',.08,'REO',1400],['Bioplast',.10,'RED',2100]],
+  ORT:[['Retainer',.34,'OTD',480],['Plate Colors',.10,'OTDOP',120],['Service',.18,'OTD',350],['Special Colors',.10,'OTD',150],['Model',.10,'OTD',420],['Active Plate',.06,'OTD',1100],['Splint',.06,'OTO',1500],['Functional Appliance',.06,'OTD',1900]],
+  HTC:[['Trioclear Double Arch',.5,'TRI',11000],['Trioclear Retainer',.4,'TRI',3800],['Refinement-Trioclear Complete',.1,'TRI',6500]],
+};
+/* Sales_Order_Type is a real, separate source column (not derived from Sales_Order_Pool) — this mock mapping
+   mirrors the actual pool->type pairing observed in the real workbook (New/ET-FN->NEW, New-TI->Try-in,
+   RM-CR/WS->Remake); real ET-FN-NC/ET-TI-NC/RM-SV/RM-LA/RM-FB rows also occur but aren't in the mock's pool set. */
+const MOCK_TYPE_OF = {New:'NEW', 'ET-FN':'NEW', 'RM-CR':'Remake', 'New-TI':'Try-in', WS:'Remake'};
+function mulberry32(a){return function(){a|=0;a=a+0x6D2B79F5|0;let t=Math.imul(a^a>>>15,1|a);t=t+Math.imul(t^t>>>7,61|t)^t;return((t^t>>>14)>>>0)/4294967296;};}
+function genMock(){
+  const rnd = mulberry32(20260924), pick = list => { let r = rnd(), s = 0; for(const x of list){ s += x[1]; if(r <= s) return x; } return list[list.length-1]; };
+  const coming = [], invoice = [], tgtBase = {}, days = [];
+  for(let d = new Date(Date.UTC(2026,7,21)); d <= new Date(Date.UTC(2026,8,24)); d = new Date(d.getTime()+864e5)) if(d.getUTCDay() !== 0) days.push(d.toISOString().slice(0,10));
+  const channels = ['Non-Chain','Non-Chain','Government','Chain','University','Private','Other'];
+  const accounts = {}; const acc = site => (accounts[site] ||= Array.from({length: 12}, (_, i) => ['AR' + String(1000 + i*7 + site.charCodeAt(0)).padStart(6,'0'), channels[i % channels.length], `${site} Dental Clinic ${i+1}`]));
+  let so = 490000, iv = 392000, cn = 8000; const sites = [...MOCK_SITES, ['SPK',.05]];
+  const lines = (g, r) => { const [sub,,pre,price] = pick(MOCK_SUBS[g]); const out = [];
+    const amt = Math.round(price*(.7+rnd()*.7)*100)/100, n = 100 + Math.floor(rnd()*300);
+    out.push({sub, item:`${pre}${String(n).padStart(5,'0')}-F`, amt, unit:'Cal'});
+    if(rnd() < .55) out.push({sub:'Service', item:`${pre}SV${String(1+Math.floor(rnd()*30)).padStart(3,'0')}-SV`, amt: Math.round(rnd()*300*100)/100, unit:'PCS'});
+    if(rnd() < .07) out.push({sub:'Product Discount', item:'DISALLSP300', amt: -Math.round((50+rnd()*400)*100)/100, unit:'PCS'});
+    return out; };
+  for(const date of days){
+    const wk = new Date(date+'T00:00:00Z').getUTCDay() === 6 ? .8 : 1;
+    for(const [site, w] of sites){
+      for(const g of (site === 'SPK' ? ['HTC'] : ['FIX','RPD','ORT'])){
+        const n = Math.round((site === 'SPK' ? 3 : MOCK_BASE[g]*w) * wk * (.8 + rnd()*.4) + (rnd() < .5 ? 0 : 0.5));
+        for(let k = 0; k < n; k++){
+          const a = acc(site)[Math.floor(rnd()*12)], r = rnd();
+          const status = r < .82 ? 'Invoiced' : r < .995 ? 'Open order' : r < .998 ? 'Delivered' : 'Canceled';
+          const ro = rnd(), ot = ro < .88 ? 'New' : ro < .96 ? (g === 'RPD' ? 'ET-FN' : 'New') : ro < .985 ? 'RM-CR' : ro < .995 ? 'New-TI' : 'WS';
+          const otype = MOCK_TYPE_OF[ot];   // Sales_Order_Type is a separate real column, not derived — mock it via the observed real mapping
+          const no = 'SODM26-' + (++so), ls = lines(g, r);
+          for(const l of ls) coming.push([date, site, g, l.sub, a[1], a[0], a[2], no, status, ot, l.item, 1, l.amt, l.unit, otype, 1]);
+          const tk = site + '|' + g; tgtBase[tk] = (tgtBase[tk] || 0) + ls.reduce((s, l) => s + l.amt, 0);
+          if(status === 'Invoiced' || (status === 'Open order' && rnd() < .3)){
+            const ino = 'IVDM26-' + (++iv);
+            for(const l of ls) invoice.push([date, site, g, l.sub, a[1], a[0], a[2], ino, l.item, l.amt, l.unit]);
+            if(rnd() < .02){ const cno = 'CNDM26-' + (++cn); for(const l of ls.slice(0,1)) invoice.push([date, site, g, l.sub, a[1], a[0], a[2], cno, l.item, -l.amt, l.unit]); }
+          }
+        }
+      }
+    }
+  }
+  // Target: flat daily amount per site x group (Mon-Sat), through month end; provisional like the real file
+  const target = []; const workDays = days.length;
+  const all = []; for(let d = new Date(Date.UTC(2026,7,21)); d <= new Date(Date.UTC(2026,8,30)); d = new Date(d.getTime()+864e5)) if(d.getUTCDay() !== 0) all.push(d.toISOString().slice(0,10));
+  for(const k in tgtBase){ const [s, g] = k.split('|'); if(s === 'CU') continue;   // CU has no target (as in the real file)
+    const daily = Math.round(tgtBase[k] / workDays / (MOCK_ACH[s] || .8) * 100) / 100; all.forEach(d => target.push([d, s, g, daily])); }
+  return {coming, invoice, target};
+}
+
+/* =====================================================================
+   State
+   ===================================================================== */
+let SQL = null, DB = null;
+const CH = {}, LAST = {};
+const S = {source:'mock', srcName:'', warnings:[], error:''};
+const G = {pg:new Set(), site:'', from:'', to:'', ot:new Set(), sub:'', channel:''};     // Filter bar
+const X = {site:'', p_group:'', date:''};                                        // Cross-filter (clicks)
+let META = {sites:[], groups:[], subGroups:{}, channels:[], orderTypes:[], orderCategories:[], statuses:[], min:'', max:'', n:{}};
+
+/* =====================================================================
+   Helpers
+   ===================================================================== */
+const $ = s => document.querySelector(s);
+const $$ = s => [...document.querySelectorAll(s)];
+const esc = s => String(s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+const fmt = n => Math.round(n||0).toLocaleString('en-US');
+/* value formatter for B1 cards/tiles and B2/B3's charts — Sales (THB), K/M-compact formatting. Block 2's Site
+   table and Block 3's Daily Detail table use fvFull (below) instead — full integer, no M/K — per the chat
+   request; everything else (B1, B4, both blocks' charts) keeps this compact form unchanged. */
+const fv = n => { if(n == null) return '–'; const a = Math.abs(n);
+  return a >= 1e6 ? (n/1e6).toFixed(2)+'M' : a >= 1e3 ? (n/1e3).toFixed(1)+'K' : fmt(n); };
+const fvFull = n => n==null ? '–' : fmt(n);
+const pctOf = (a,b) => (a == null || b == null || !(b > 0)) ? null : a/b*100;
+const fp = p => p==null ? '–' : p.toFixed(1)+'%';
+/* fc = plain integer (never K/M-compacted) — Block 4 is always Case, never Sales/THB (whether COUNT(*) or
+   COUNT(DISTINCT), see agg() below), so fv() (THB-formatted) doesn't apply there.
+   fp2 = 2-decimal % — used by Block 4 and by Block 3's Daily Detail %Invoice/Coming & %Invoice/Target columns. */
+const fc = n => n==null ? '–' : fmt(n);
+const fp2 = p => p==null ? '–' : p.toFixed(2)+'%';
+const pcls = p => p==null ? '' : p<70 ? 'c-red' : p<80 ? 'c-pink' : p<90 ? 'c-yellow' : 'c-green';
+const tcls = p => p==null ? '' : p<70 ? 't-red' : p<80 ? 't-pink' : p<90 ? 't-yellow' : 't-green';
+const thrColor = p => p==null ? '#cbd5e1' : p<70 ? '#e5484d' : p<80 ? '#f08cab' : p<90 ? '#f2c94c' : '#3fae6a';
+const rcls = (p,t) => p==null ? '' : p<=t ? 'r-good' : p<=t+3 ? 'r-ok' : p<=t+6 ? 'r-warn' : 'r-bad';
+const gColor = g => PG_COLOR[g] || EXTRA_COLORS[Math.max(0, META.groups.indexOf(g)) % EXTRA_COLORS.length];
+const lbl = v => v == null || v === '' ? '(blank)' : v;
+const addDays = (iso,n) => new Date(Date.parse(iso)+n*864e5).toISOString().slice(0,10);
+const sum = (a, f) => a.reduce((s, x) => s + (f(x) || 0), 0);
+/* Which Quick-range preset the current Filter Bar date range (G.from..G.to) matches, if any — used only to
+   highlight the active Quick-range button (does NOT drive Target-related figures; see mtdRange() below).
+   Checks MTD before All: when the dataset's earliest date happens to be the 1st of the reporting month,
+   "All" and "MTD" cover the identical range — MTD is the more specific, intentional match then (it's what
+   resetGlobal() actually sets), so it must win the tie instead of falling through to the broader "All" label. */
+const quickCode = () => (G.to===META.max && G.from===META.max.slice(0,8)+'01') ? 'MTD' : (G.to===META.max && G.from===META.min) ? 'ALL' : (G.to===META.max && G.from===addDays(META.max,-6)) ? '7D' : '';
+/* Target is a fixed "Month-To-Date" figure by definition (Blocks 1 & 2, and the P-Group Coming/Target/Invoice
+   chart in Block 3) — always month-start(Data as of) .. Data as of, and NEVER driven by the Filter Bar's own
+   Date range / Quick range (that picker only affects Blocks 3's daily table and Block 4). This is deliberate,
+   not an oversight: a Target the Filter Bar could narrow to e.g. one week would need a matching narrowed
+   Target, which the source data cannot support meaningfully (Target is inherently a monthly figure). */
+const monthStart = d => d.slice(0,8) + '01';
+const monthEndOf = d => { const [y, m] = d.split('-').map(Number); return new Date(Date.UTC(y, m, 0)).toISOString().slice(0,10); };
+const mtdRange = () => [monthStart(META.max), META.max];
+const fullMonthRange = () => [monthStart(META.max), monthEndOf(META.max)];
+const targetLabel = (base='Target') => `${base} (MTD)`;
+/* setTimeout, not requestAnimationFrame: rAF callbacks are paused entirely while the tab/window is hidden,
+   which would hang a large import indefinitely if the user switches away mid-import. */
+const tick = () => new Promise(r => setTimeout(r, 0));
+function visGroups(){ return G.pg.size ? META.groups.filter(g => G.pg.has(g)) : META.groups; }
+
+function q(sql, params=[]){
+  const st = DB.prepare(sql); st.bind(params);
+  const out = []; while(st.step()) out.push(st.getAsObject());
+  st.free(); return out;
+}
+
+/* ---- source-aware querying ----
+   W(): WHERE for one source (opts.b1 = Block 1's own Coming scope, opts.range = override date range, used for
+   the Full Month target, opts.invoiced = Coming rows with Order_Status = Invoiced — Block 4's graph 1 "Invoice"
+   and graph 2 numerator, opts.b4 = Block 4's own Unit_Cal='Cal' row-count scope, see agg() below) = Filter bar (G) AND cross-filter
+   (X). Every source is ALSO restricted, unconditionally, to p_group IN (FIX,RPD,ORT,HTC) — this is the single,
+   central place that restriction is applied, so every Block / chart / table / the Global Filter Bar's own
+   P-Group options (built from META.groups, itself derived from this same restricted set — see loadMeta()) all
+   see the same 4 groups. tbl_Coming may still contain other P_Group values in the raw table (nothing is
+   dropped at import); they are simply never matched by any query. Returns null when an active filter is a
+   dimension this source does not have -> the measure is "not available" (rendered as "–"). excl = cross-filter
+   dimensions the widget skips (its own rows); opts.withCanceled / opts.noOt */
+function W(src, excl=[], opts={}){
+  const S_ = SRC[src], dr = opts.range || [G.from, G.to];
+  const c = ['date BETWEEN ? AND ?', `p_group IN (${PG_ORDER.map(()=>'?').join(',')})`], p = [dr[0], dr[1], ...PG_ORDER]; let ok = true;
+  const need = d => { if(!S_.dims.includes(d)) ok = false; };
+  if(G.pg.size){ c.push(`p_group IN (${[...G.pg].map(()=>'?').join(',')})`); p.push(...G.pg); }
+  if(G.site){ c.push('site=?'); p.push(G.site); }
+  if(G.sub){ need('sub'); c.push('subcategory=?'); p.push(G.sub); }
+  if(G.channel){ need('channel'); c.push('channel=?'); p.push(G.channel); }
+  if(G.ot.size && !opts.noOt){ need('ot'); c.push(`sales_order_pool IN (${[...G.ot].map(()=>'?').join(',')})`); p.push(...G.ot); }
+  for(const d of ['site','p_group','date']) if(X[d] && !excl.includes(d)){ need(d); c.push(`${XCOL[d]}=?`); p.push(X[d]); }
+  if(src === 'coming' && !opts.withCanceled) c.push("order_status<>'Canceled'");
+  if(src === 'coming' && opts.b1){ c.push(`sales_order_pool IN (${B1_COMING_TYPES.map(()=>'?').join(',')})`); p.push(...B1_COMING_TYPES); }   // Block 1 scope
+  if(src === 'coming' && opts.invoiced) c.push("order_status='Invoiced'");   // Block 4: 'Invoice' is measured from Coming rows whose status is Invoiced
+  if(src === 'coming' && opts.b4) c.push("LOWER(unit_cal)='cal'");   // Block 4 rule: every cell filters to Unit_Cal='Cal'
+  return ok ? {w:c.join(' AND '), p} : null;
+}
+/* metric selector per source: Sales (THB) = SUM(amount); Block 1/2/3 are Sales-only (no Case toggle). */
+function mSel(src){ return src === 'target' ? 'SUM(target_amount)' : `SUM(${SRC[src].amt})`; }
+function agg(src, gcols=[], excl=[], opts={}){
+  // Block 4 (opts.b4): row COUNT of matching rows — never the Sales/THB figure mSel() would give (Block 4 has
+  // no Sales/THB view at all). opts.distinct switches that row COUNT(*) to COUNT(DISTINCT order_no) — graphs 1
+  // and 2 count distinct Orders (an Order can span several Coming lines); graphs 3 and 4 stay plain COUNT(*)
+  // (line count) per the decision in chat — see the Block 4 comment above renderB4() below.
+  const sel = opts.b4 ? (opts.distinct ? 'COUNT(DISTINCT order_no)' : 'SUM(coming_count_sales_order)') : mSel(src), w = sel && W(src, excl, opts); if(!w) return null;
+  const cols = gcols.length ? gcols.join(',') + ',' : '', grp = gcols.length ? ' GROUP BY ' + gcols.join(',') : '';
+  return q(`SELECT ${cols}${sel} AS v FROM ${SRC[src].tbl} WHERE ${w.w}${grp}`, w.p);
+}
+function tot(src, excl=[], opts={}){ const r = agg(src, [], excl, opts); return r ? (r[0].v ?? 0) : null; }
+const keyOf = (r, cols) => cols.map(c => r[c]).join('|');
+function mapOf(rows, cols){ return rows ? new Map(rows.map(r => [keyOf(r, cols), r.v])) : null; }
+const getv = (m, k, d) => m ? (m.get(k) ?? d) : null;
+/* =====================================================================
+   Database
+   ===================================================================== */
+const SCHEMA = `
+  DROP TABLE IF EXISTS tbl_Coming; DROP TABLE IF EXISTS tbl_Invoice; DROP TABLE IF EXISTS tbl_Target;
+  DROP TABLE IF EXISTS cfg_remake_target; DROP TABLE IF EXISTS meta;   -- (cfg_remake_target: leftover from older files)
+  CREATE TABLE tbl_Coming(row_id INTEGER PRIMARY KEY AUTOINCREMENT, src_row INTEGER,
+    date TEXT NOT NULL, site TEXT NOT NULL, p_group TEXT NOT NULL, subcategory TEXT, channel TEXT, account_id TEXT, coming_name TEXT,
+    order_no TEXT, order_status TEXT, sales_order_pool TEXT, sales_order_type TEXT, unit_cal TEXT, coming_amount REAL NOT NULL DEFAULT 0,
+    coming_count_sales_order REAL NOT NULL DEFAULT 1);
+  CREATE TABLE tbl_Invoice(row_id INTEGER PRIMARY KEY AUTOINCREMENT, src_row INTEGER,
+    date TEXT NOT NULL, site TEXT NOT NULL, p_group TEXT NOT NULL, subcategory TEXT, channel TEXT, account_id TEXT, invoicing_name TEXT,
+    order_no TEXT, unit_cal TEXT, invoice_amount REAL NOT NULL DEFAULT 0);
+  CREATE TABLE tbl_Target(row_id INTEGER PRIMARY KEY AUTOINCREMENT, src_row INTEGER,
+    date TEXT NOT NULL, site TEXT NOT NULL, p_group TEXT NOT NULL, target_amount REAL NOT NULL DEFAULT 0);
+  CREATE TABLE meta(key TEXT PRIMARY KEY, value TEXT);`;
+const INDEXES = `
+  CREATE INDEX ix_c_date ON tbl_Coming(date); CREATE INDEX ix_c_key ON tbl_Coming(site, p_group); CREATE INDEX ix_c_ord ON tbl_Coming(order_no);
+  CREATE INDEX ix_i_date ON tbl_Invoice(date); CREATE INDEX ix_i_key ON tbl_Invoice(site, p_group); CREATE INDEX ix_i_ord ON tbl_Invoice(order_no);
+  CREATE INDEX ix_t_date ON tbl_Target(date, site, p_group);`;
+const TBL_COLS = {
+  tbl_Coming:['src_row','date','site','p_group','subcategory','channel','account_id','coming_name','order_no','order_status','sales_order_pool','sales_order_type','unit_cal','coming_amount','coming_count_sales_order'],
+  tbl_Invoice:['src_row','date','site','p_group','subcategory','channel','account_id','invoicing_name','order_no','unit_cal','invoice_amount'],
+  tbl_Target:['src_row','date','site','p_group','target_amount'],
+};
+async function insertAll(tables, progress){
+  try{ DB.exec('ROLLBACK'); }catch(_){}          // clear any transaction left open by an earlier failure
+  DB.exec('BEGIN');
+  try{
+    for(const [tbl, rows] of Object.entries(tables)){
+      DB.run(`DELETE FROM ${tbl}`);
+      const st = DB.prepare(`INSERT INTO ${tbl}(${TBL_COLS[tbl].join(',')}) VALUES (${TBL_COLS[tbl].map(()=>'?').join(',')})`);
+      for(let i = 0; i < rows.length; i++){ st.run(rows[i]); if(progress && i % 20000 === 0){ progress(`บันทึก ${tbl} ${fmt(i)} / ${fmt(rows.length)} แถว…`); await tick(); } }
+      st.free();
+    }
+    DB.exec('COMMIT');
+  }catch(e){ DB.exec('ROLLBACK'); throw e; }
+}
+function setMeta(k,v){ DB.run('INSERT OR REPLACE INTO meta VALUES (?,?)', [k, String(v)]); }
+
+async function seedMock(){
+  DB.exec(SCHEMA);
+  const m = genMock();
+  await insertAll({
+    tbl_Coming: m.coming.map((r,i) => [i+2, r[0],r[1],r[2],r[3],r[4],r[5],r[6],r[7],r[8],r[9], r[14], r[13], r[12], r[15]]),
+    tbl_Invoice: m.invoice.map((r,i) => [i+2, r[0],r[1],r[2],r[3],r[4],r[5],r[6],r[7], r[10], r[9]]),
+    tbl_Target: m.target.map((r,i) => [i+2, ...r]),
+  });
+  DB.exec(INDEXES);
+  setMeta('source','mock'); setMeta('schema_version','8'); setMeta('created_at', new Date().toISOString());
+  S.source='mock'; S.srcName=''; S.warnings=[];
+}
+
+function loadMeta(){
+  const one = s => q(s)[0];
+  const sites = q(`SELECT site, SUM(v) s FROM (SELECT site, coming_amount v FROM tbl_Coming UNION ALL SELECT site, invoice_amount FROM tbl_Invoice) GROUP BY site ORDER BY s DESC`);
+  META.sites = sites.map(r => r.site);
+  // P-Group is restricted to FIX/RPD/ORT/HTC dashboard-wide (see W()) — META.groups drives the Global Filter
+  // Bar's P-Group buttons, Block 1's cards and Block 3's columns, so it must reflect that same restriction:
+  // any other raw P_Group value present in tbl_Coming/tbl_Invoice (DS, IOS, ICHARM, SERVICE, NON-CAL, "3D
+  // SLEEP", ...) is intentionally excluded here, not just filtered out of query results.
+  const gs = q('SELECT DISTINCT p_group FROM (SELECT p_group FROM tbl_Coming UNION SELECT p_group FROM tbl_Invoice UNION SELECT p_group FROM tbl_Target)').map(r => r.p_group);
+  META.groups = PG_ORDER.filter(g => gs.includes(g));
+  META.subGroups = {};
+  q('SELECT DISTINCT subcategory s, p_group g FROM (SELECT subcategory, p_group FROM tbl_Coming UNION ALL SELECT subcategory, p_group FROM tbl_Invoice) WHERE subcategory IS NOT NULL').forEach(r => (META.subGroups[r.s] ||= new Set()).add(r.g));
+  META.channels = q('SELECT DISTINCT channel c FROM (SELECT channel FROM tbl_Coming UNION ALL SELECT channel FROM tbl_Invoice) WHERE channel IS NOT NULL ORDER BY c').map(r => r.c);
+  const ots = q('SELECT DISTINCT sales_order_pool t FROM tbl_Coming WHERE sales_order_pool IS NOT NULL').map(r => r.t);
+  META.orderTypes = [...OT_ORDER.filter(t => ots.includes(t)), ...ots.filter(t => !OT_ORDER.includes(t)).sort()];
+  // Sales_Order_Type: a separate real source column (NOT derived from Sales_Order_Pool above) — Block 4's
+  // "Order Type by P-Group" table groups by this. TYPE_ORDER is the canonical display order.
+  const cats = q('SELECT DISTINCT sales_order_type t FROM tbl_Coming WHERE sales_order_type IS NOT NULL').map(r => r.t);
+  META.orderCategories = [...TYPE_ORDER.filter(t => cats.includes(t)), ...cats.filter(t => !TYPE_ORDER.includes(t)).sort()];
+  META.statuses = q('SELECT DISTINCT order_status s FROM tbl_Coming').map(r => r.s);
+  const mm = one(`SELECT MIN(d) mn FROM (SELECT MIN(date) d FROM tbl_Coming UNION ALL SELECT MIN(date) FROM tbl_Invoice)`);
+  const mx = one(`SELECT MAX(date) mx FROM tbl_Invoice`).mx || one(`SELECT MAX(date) mx FROM tbl_Coming`).mx;
+  META.min = mm.mn; META.max = mx;
+  META.n = {coming: one('SELECT COUNT(*) n FROM tbl_Coming').n, invoice: one('SELECT COUNT(*) n FROM tbl_Invoice').n, target: one('SELECT COUNT(*) n FROM tbl_Target').n};
+}
+
+/* =====================================================================
+   Filter state helpers
+   ===================================================================== */
+function resetGlobal(){
+  G.pg = new Set(); G.site=''; G.ot = new Set(); G.sub=''; G.channel='';
+  G.to = META.max; G.from = META.max.slice(0,8)+'01';
+  if(G.from < META.min) G.from = META.min;
+}
+function clearX(){ for(const k in X) X[k]=''; }
+function setX(dim, val){ X[dim] = val; refresh(); }
+function toggleX(dim, val){ setX(dim, X[dim]===val ? '' : val); }
+
+/* =====================================================================
+   Controls
+   ===================================================================== */
+const opt = (v,l,sel) => `<option value="${esc(v)}"${sel?' selected':''}>${esc(l)}</option>`;
+function syncControls(){
+  $('#gPg').innerHTML = `<button type="button" data-gpg="" class="${G.pg.size?'':'on'}">All</button>` +
+    META.groups.map(g => `<button type="button" data-gpg="${esc(g)}" class="${G.pg.has(g)?'on':''}">${esc(g)}</button>`).join('');
+  const siteOpts = opt('','All',!G.site) + META.sites.map(s => opt(s,s,G.site===s)).join('');
+  $('#gSite').innerHTML = siteOpts;
+  $$('.bsel').forEach(sel => { sel.innerHTML = siteOpts; sel.classList.toggle('active', !!G.site); });
+  $('#gFrom').min = $('#gTo').min = META.min; $('#gFrom').max = $('#gTo').max = META.max;
+  $('#gFrom').value = G.from; $('#gTo').value = G.to;
+  $$('#gQuick button').forEach(b => b.classList.toggle('on', b.dataset.q===quickCode()));
+  $('#gOt').innerHTML = `<button type="button" data-ot="" class="${G.ot.size?'':'on'}">All</button>` + META.orderTypes.map(t => `<button type="button" data-ot="${esc(t)}" class="${G.ot.has(t)?'on':''}">${esc(t)}</button>`).join('');
+  const subs = Object.keys(META.subGroups).sort((a,b) => a.localeCompare(b));
+  $('#gSub').innerHTML = opt('','All subcategories',!G.sub) + META.groups.map(g => {
+    const cs = subs.filter(c => META.subGroups[c].has(g)); if(!cs.length) return '';
+    return `<optgroup label="${esc(g)}">${cs.map(c => opt(c,c,G.sub===c)).join('')}</optgroup>`; }).join('');
+  $('#gChannel').innerHTML = opt('','All channels',!G.channel) + META.channels.map(c => opt(c,c,G.channel===c)).join('');
+  const nAdv = (G.ot.size?1:0) + (G.sub?1:0) + (G.channel?1:0);
+  $('#advBadge').textContent = nAdv; $('#advBadge').classList.toggle('hidden', !nAdv);
+  $('#btnAdv').classList.toggle('on', !!nAdv);
+  $$('.asofVal').forEach(e => e.textContent = META.max);
+  $('#mockBadge').classList.toggle('hidden', S.source !== 'mock');
+}
+const XICON = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>';
+function renderActive(){
+  const on = Object.keys(X).filter(k => X[k]);
+  const funnel = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="22 3 2 3 10 12.46 10 19 14 21 14 12.46 22 3"/></svg>';
+  const alt = [];
+  if(G.ot.size) alt.push(`<span class="chip alt"><b>Sales Order Pool:</b> ${esc([...G.ot].join(', '))}<button type="button" data-cg="ot" title="ล้าง">${XICON}</button></span>`);
+  if(G.sub) alt.push(`<span class="chip alt"><b>Subcategory:</b> ${esc(G.sub)}<button type="button" data-cg="sub" title="ล้าง">${XICON}</button></span>`);
+  if(G.channel) alt.push(`<span class="chip alt"><b>Channel:</b> ${esc(G.channel)}<button type="button" data-cg="channel" title="ล้าง">${XICON}</button></span>`);
+  $('#activeRow').innerHTML = `<span class="al">${funnel}Active Filter</span>` + (on.length || alt.length
+    ? on.map(k => `<span class="chip"><b>${DIM_LABEL[k]}:</b> ${esc(X[k])}<button type="button" data-clear="${k}" title="ล้างเงื่อนไขนี้">${XICON}</button></span>`).join('') + alt.join('') +
+      (on.length ? `<button type="button" class="clear-btn" data-clear="all">Clear Filter</button>` : '')
+    : `<span class="none">คลิกแถวตาราง / แท่งกราฟ / การ์ด เพื่อกรองข้ามทุก Block (ทำงานร่วมกับ Filter Bar ด้านบนแบบ AND)</span>`);
+}
+function renderBanner(){
+  const b = $('#banner'); b.className = 'banner';
+  if(S.error){ b.classList.add('err'); b.innerHTML = `<span class="b-text">⚠ ${esc(S.error)}</span><button class="b-btn" type="button" data-act="dismiss">ปิด</button>`; return; }
+  const w = S.warnings.length ? `<details><summary>หมายเหตุระหว่างนำเข้า (${S.warnings.length})</summary><ul>${S.warnings.map(x=>`<li>${esc(x)}</li>`).join('')}</ul></details>` : '';
+  const cnt = `Coming ${fmt(META.n.coming)} · Invoice ${fmt(META.n.invoice)} · Target ${fmt(META.n.target)} แถว`;
+  if(S.source==='mock'){
+    b.innerHTML = `<span class="b-text">กำลังแสดงข้อมูลตัวอย่าง (Mock Data) · ${cnt} · ${META.min} → ${META.max} — กด <b>Import File</b> เพื่อนำเข้าไฟล์ Excel (ชีต Coming / Invoice / Target) หรือ <b>Excel Template</b></span>`;
+  }else{
+    b.classList.add('live');
+    b.innerHTML = `<span class="b-text">นำเข้าแล้ว: <b>${esc(S.srcName)}</b> · ${cnt} · ${META.min} → ${META.max}</span><button class="b-btn" type="button" data-act="restore">กลับไปใช้ Mock Data</button>`;
+  }
+  if(w) b.insertAdjacentHTML('beforeend', w);
+}
+
+/* =====================================================================
+   Charts
+   ===================================================================== */
+Chart.defaults.font.family = "'Inter','Sarabun',sans-serif";
+Chart.defaults.font.size = 11;
+Chart.defaults.color = '#64748b';
+Chart.register({id:'valueLabels', afterDatasetsDraw(chart, args, o){
+  if(!o || !o.show) return;
+  const {ctx} = chart, horiz = chart.options.indexAxis==='y';
+  ctx.save(); ctx.font = "600 10px Inter"; ctx.fillStyle = '#1e293b'; ctx.textAlign = horiz ? 'left' : 'center';
+  chart.data.datasets.forEach((ds,i) => { const mt = chart.getDatasetMeta(i); if(mt.hidden || mt.type==='line') return;
+    mt.data.forEach((el,j) => { const v = ds.data[j]; if(v==null) return; const t = o.fmt ? o.fmt(v) : v;
+      horiz ? ctx.fillText(t, el.x+5, el.y+3.5) : ctx.fillText(t, el.x, el.y-4); }); });
+  ctx.restore();
+}});
+function mkChart(id, cfg){
+  const first = !CH[id]; if(CH[id]) CH[id].destroy();
+  cfg.options = Object.assign({responsive:true, maintainAspectRatio:false, animation: first ? {duration:400} : false,
+    interaction:{mode:'index', intersect:false}}, cfg.options||{});
+  const onClick = cfg.onPick;
+  cfg.options.onClick = (e, els) => { if(els.length && onClick) onClick(els[0]); };
+  cfg.options.onHover = (e, els) => { e.native.target.style.cursor = els.length && onClick ? 'pointer' : 'default'; };
+  CH[id] = new Chart(document.getElementById(id), cfg);
+}
+function killChart(id){ if(CH[id]){ CH[id].destroy(); delete CH[id]; } }
+const fade = (hex, dim) => dim ? hex+'55' : hex;
+const yAxis = {beginAtZero:true, grid:{color:'#eef2f6'}, border:{display:false}, ticks:{padding:4}};
+const xAxis = {grid:{display:false}};
+const legendOpts = {position:'top', align:'end', labels:{usePointStyle:true, pointStyle:'circle', boxWidth:8, boxHeight:8, padding:12,
+  generateLabels: ch => Chart.defaults.plugins.legend.labels.generateLabels(ch).map(l => { const ds = ch.data.datasets[l.datasetIndex]; return ds && ds.solid ? {...l, fillStyle:ds.solid, strokeStyle:ds.solid} : l; })}};
+const tipV = {callbacks:{label:c => `${c.dataset.label}: ${fv(c.parsed.y ?? c.parsed.x)}`}};
+
+/* =====================================================================
+   Block renderers
+   ===================================================================== */
+const emptyRow = (n,msg='ไม่มีข้อมูลตามเงื่อนไขที่เลือก') => `<tr><td class="empty" colspan="${n}">${msg}</td></tr>`;
+const ICON = {
+  flow:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/></svg>',
+  check:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg>'
+};
+
+/* ---- Block 1 : overview ----
+   %Achievement = SUM(Production Output) ÷ SUM(Target) over the whole scope — plain Sum ÷ Sum, no per-cell
+   (Site×P-Group) matching. Target naturally excludes Site×P-Group combinations that simply have no target
+   row (e.g. CU/FIX, KKN/RPD); Production Output always uses the exact total shown on the card, so the two
+   displayed numbers divide out to the displayed percentage (verified against manual Sum/Sum checks). */
+function renderB1(){
+  const groups = visGroups(), ex = ['p_group'];
+  // Target — and everything compared against it — is fixed to MTD (see mtdRange() above), independent of
+  // the Filter Bar's Date range / Quick range. dateOpt pins Coming/Invoice to that same window, so the %
+  // shown always reconciles to (Output shown) ÷ (Target shown).
+  const dateOpt = {range: mtdRange()};
+  const inv = mapOf(agg('invoice',['p_group'],ex,dateOpt), ['p_group']);
+  // tCells/tFull exclude the P-Group cross-filter (X.p_group) so every group card keeps its own true value
+  // (just dimmed) when another card is selected. The Total card must NOT exclude it — its Target has to
+  // narrow the same way its Output ("out", via tot() with no excl override) already does.
+  const tCells = mapOf(agg('target',['site','p_group'],ex,{range:mtdRange()}), ['site','p_group']);
+  const tCellsAll = mapOf(agg('target',['site','p_group'],[],{range:mtdRange()}), ['site','p_group']);
+  const sumT = (map, g) => { let s = 0; if(map) for(const [k, v] of map) if(g == null || k.split('|')[1] === g) s += v || 0; return s; };
+  // secondary line: Full Month target = the whole calendar month Data-as-of falls in (Sales only; Target has no Case)
+  const fullOpt = {range: fullMonthRange()};
+  const tFull = mapOf(agg('target',['site','p_group'],ex.concat('date'),fullOpt), ['site','p_group']);
+  const tFullAll = mapOf(agg('target',['site','p_group'],['date'],fullOpt), ['site','p_group']);
+  const fullLine = (o, t) => t ? `<div class="kfull">เป้าเต็มเดือน ${fv(t)} · ทำได้ ${fp(pctOf(o, t))} ของเดือน</div>` : '';
+  const card = g => { const o = getv(inv, g, 0), t = sumT(tCells, g), a = pctOf(o, t);
+    return `<div class="kcard clk${X.p_group===g?' sel':''}${X.p_group&&X.p_group!==g?' dim':''}" data-x="p_group" data-v="${esc(g)}" title="คลิกเพื่อกรองตาม P-Group ${esc(g)}">
+      <div class="kname"><span class="kd" style="background:${gColor(g)}"></span>${esc(g)}</div>
+      <div class="kgrid"><div><div class="kv">${fv(t || null)}</div><div class="kl">${targetLabel()}</div></div><div><div class="kv">${fv(o)}</div><div class="kl">Production Output</div></div></div>
+      <div class="kach ${tcls(a)}">${a==null ? 'N/A' : fp(a)}</div><div class="kl">%Achievement</div>
+      <div class="prog"><i style="width:${Math.min(100,a||0)}%;background:${thrColor(a)}"></i></div>${fullLine(o, sumT(tFull, g))}</div>`; };
+  const out = tot('invoice', [], dateOpt), tgtTotal = sumT(tCellsAll, null), A_a = pctOf(out, tgtTotal);
+  const scope = [G.site&&`Site ${G.site}`, X.site&&`Site ${X.site}`, X.p_group&&`P-Group ${X.p_group}`, X.date&&X.date].filter(Boolean).join(' · ');
+  $('#kTotal').innerHTML = `<div class="kcard total clk" data-clear="p_group" title="คลิกเพื่อล้างการเลือก P-Group">
+      <div class="kname">Total <span class="ksub">${esc(scope || 'ทุก Site / ทุก P-Group')}</span></div>
+      <div class="kv hero">${fv(out)}</div><div class="kl">Production Output</div>
+      <div class="kgrid" style="margin-top:12px"><div><div class="kv">${fv(tgtTotal || null)}</div><div class="kl">${targetLabel()}</div></div><div><div class="kach ${tcls(A_a)}" style="margin-top:0">${A_a==null ? 'N/A' : fp(A_a)}</div><div class="kl">%Achievement</div></div></div>
+      <div class="prog"><i style="width:${Math.min(100,A_a||0)}%;background:${thrColor(A_a)}"></i></div>${fullLine(out, sumT(tFullAll, null))}</div>`;
+  $('#kGroups').innerHTML = groups.map(card).join('');
+
+  const c = tot('coming', [], {...dateOpt, b1:true}), pc = pctOf(out, c);
+  const tile = (ic,l,v,s,cls='') => `<div class="tile"><div class="ti">${ic}</div><div><div class="tl">${l}</div><div class="tv ${cls}">${v}</div><div class="ts">${s}</div></div></div>`;
+  $('#kStrip').innerHTML =
+    tile(ICON.flow, 'Coming', fv(c), 'ยอดขาย · ET-FN / New / RM-CR · ไม่รวม Canceled · MTD') +
+    tile(ICON.check, '% Invoice / Coming', fp(pc), 'Production Output ÷ Coming (Coming ตามเงื่อนไข Block 1)', tcls(pc));
+  $$('.mtdAsof').forEach(e => e.textContent = mtdRange().join(' → '));
+}
+
+/* ---- Block 2 : site performance (Sales / THB only) ----
+   Target (MTD) is a fixed month-start(Data as of)..Data-as-of window (see mtdRange()), independent of the
+   Filter Bar's Date range / Quick range. Coming and Production Output are pinned to that same window too —
+   the Production Output cell feeds BOTH the %Prod/Coming and %Prod/Target(MTD) ratios in the same row, so it
+   must use one single period or the two ratios (and a manual re-check of either) would stop reconciling. */
+function renderB2(){
+  const ex = ['site'], dateOpt = {range: mtdRange()};
+  const o2 = s => s === 'coming' ? {...dateOpt, b1:true} : dateOpt;
+  const [mC, mT, mI] = ['coming','target','invoice'].map(s => mapOf(agg(s,['site'],ex,o2(s)), ['site']));
+  const names = new Set(); [mC, mI].forEach(m => m && m.forEach((v,k) => names.add(k)));
+  const sortKey = s => getv(mI,s,null) ?? getv(mC,s,0) ?? 0, sites = [...names].sort((a,b) => sortKey(b) - sortKey(a));
+  const rows = sites.map(s => { const c = getv(mC,s,0), i = getv(mI,s,0), t = mT ? (mT.get(s) ?? null) : null;
+    return {s, c, i, t, a: pctOf(i,c), b: t > 0 ? pctOf(i,t) : null}; });
+  const totC = tot('coming',ex,o2('coming')), totI = tot('invoice',ex,dateOpt), totT = tot('target',ex,dateOpt);
+  const aT = pctOf(totI, totC), bT = pctOf(totI, totT);
+  const body = rows.map(r => `<tr class="clk${X.site===r.s?' sel':''}" data-x="site" data-v="${esc(r.s)}"><td class="l"><b>${esc(r.s)}</b></td><td>${fvFull(r.c)}</td><td>${fvFull(r.t)}</td><td>${fvFull(r.i)}</td><td class="${pcls(r.a)}">${fp(r.a)}</td><td class="${pcls(r.b)}">${fp(r.b)}</td></tr>`).join('');
+  $('#b2Table').innerHTML = `<table class="dt"><thead><tr><th class="l">Site</th><th>Coming</th><th>${targetLabel()}</th><th>Production Output</th><th>% Prod / Coming</th><th>% Prod / ${targetLabel()}</th></tr></thead>
+    <tbody>${body || emptyRow(6)}</tbody>${rows.length?`<tfoot><tr><td class="l">Total</td><td>${fvFull(totC)}</td><td>${fvFull(totT)}</td><td>${fvFull(totI)}</td><td class="${pcls(aT)}">${fp(aT)}</td><td class="${pcls(bT)}">${fp(bT)}</td></tr></tfoot>`:''}</table>`;
+
+  const labels = rows.map(r => r.s), vals = rows.map(r => r.b);
+  $('#b2ChartTitle').innerHTML = `% Achievement by Site <span>(Production Output / ${targetLabel()})</span>`;
+  $('#b2ChartWrap').style.height = Math.max(260, rows.length*26 + 60) + 'px';
+  $('#b2Note').innerHTML = `<b>Note:</b> ${targetLabel()} = ผลรวม Target ตั้งแต่ต้นเดือนถึง Data as of เสมอ (คงที่ ไม่ขึ้นกับ Date range / Quick range ด้านบน) และยังเป็นข้อมูลชั่วคราว · Coming และ Production Output ในตารางนี้ก็ยึดช่วง MTD เดียวกัน (ไม่ใช่ช่วงที่เลือกด้านบน) เพื่อให้ %Prod/Coming และ %Prod/${targetLabel()} คำนวณย้อนกลับตรงกับตัวเลขที่แสดงเสมอ · Site ที่ไม่มี Target จะไม่มีแท่ง · %Achievement รวมเทียบเฉพาะ Site ที่มี Target`;
+  mkChart('cB2', {type:'bar', data:{labels, datasets:[{label: '% Achievement', data:vals, borderRadius:4, barThickness:18,
+      backgroundColor: labels.map((s,i) => fade(thrColor(vals[i]), X.site && X.site!==s))}]},
+    options:{indexAxis:'y', interaction:{mode:'index', axis:'y', intersect:false},
+      plugins:{legend:{display:false}, valueLabels:{show:true, fmt:v=>v.toFixed(1)+'%'}, tooltip:{callbacks:{label:c=>fp(c.parsed.x)}}},
+      scales:{x:{...yAxis, min:0, suggestedMax:110, grace:'8%', ticks:{callback:v=>v+'%'}}, y:{grid:{display:false}, ticks:{font:{weight:'600'}}}}},
+    onPick: el => toggleX('site', labels[el.index])});
+}
+
+/* ---- Block 3 : P-Group by day (Sales / THB only) ---- */
+function renderB3(){
+  const groups = visGroups(), ex = ['date','p_group'];
+  const D = {}, o3 = s => s === 'coming' ? {b1:true} : {};      // Block 3 Coming = Block 1 scope
+  for(const s of ['coming','target','invoice']) D[s] = {
+    dg: mapOf(agg(s,['date','p_group'],ex,o3(s)), ['date','p_group']), d: mapOf(agg(s,['date'],ex,o3(s)), ['date']),
+    g: mapOf(agg(s,['p_group'],ex,o3(s)), ['p_group']), all: tot(s,ex,o3(s))};
+  LAST.daily = D;
+  const dset = new Set(); [D.coming.d, D.invoice.d].forEach(m => m && m.forEach((v,k) => dset.add(k)));
+  const dates = [...dset].sort();
+  const span = 5;
+  const body = dates.map(d => {
+    const tds = groups.map(g => { const k = d+'|'+g, s = X.p_group===g ? ' gsel' : '';
+      const c = getv(D.coming.dg,k,0), t = getv(D.target.dg,k,null), i = getv(D.invoice.dg,k,0);
+      const pic = pctOf(i,c), pit = pctOf(i,t);
+      return `<td class="gb${s}">${fvFull(c)}</td><td class="${s}">${fvFull(t)}</td><td class="${s}">${fvFull(i)}</td><td class="${s} ${pcls(pic)}">${fp2(pic)}</td><td class="${s} ${pcls(pit)}">${fp2(pit)}</td>`; }).join('');
+    const tc = getv(D.coming.d,d,0), tt = getv(D.target.d,d,null), ti = getv(D.invoice.d,d,0);
+    const p = pctOf(ti,tc), pt = pctOf(ti,tt);
+    const totTds = `<td class="gb">${fvFull(tc)}</td><td>${fvFull(tt)}</td><td>${fvFull(ti)}</td><td class="${pcls(p)}">${fp2(p)}</td><td class="${pcls(pt)}">${fp2(pt)}</td>`;
+    return `<tr class="clk${X.date===d?' sel':''}" data-x="date" data-v="${d}"><td class="l">${d}</td>${tds}${totTds}</tr>`; }).join('');
+  // Total row: %Invoice/Coming and %Invoice/Target are SUM(Invoice)÷SUM(Coming/Target) over the whole range —
+  // not an average of the daily %'s — same Sum÷Sum principle used everywhere else on this dashboard. Total
+  // Coming/Target/Invoice are plain SUM(amount) (Sales/THB), so — unlike Block 4's DISTINCT-Order counts —
+  // they equal the sum of the per-P-Group columns exactly, with no double-counting to worry about.
+  const foot = groups.map(g => { const c = getv(D.coming.g,g,0), t = getv(D.target.g,g,null), i = getv(D.invoice.g,g,0);
+    const pic = pctOf(i,c), pit = pctOf(i,t);
+    return `<td class="gb">${fvFull(c)}</td><td>${fvFull(t)}</td><td>${fvFull(i)}</td><td class="${pcls(pic)}">${fp2(pic)}</td><td class="${pcls(pit)}">${fp2(pit)}</td>`; }).join('');
+  const hd1 = groups.map(g => `<th colspan="${span}" class="gb top clk${X.p_group===g?' gsel':''}" data-x="p_group" data-v="${esc(g)}" title="คลิกเพื่อกรองตาม P-Group ${esc(g)}"><span class="pgdot" style="background:${gColor(g)}"></span>${esc(g)}</th>`).join('') + `<th colspan="${span}" class="gb top">Total</th>`;
+  const hd2row = (s='') => `<th class="h2r gb${s}">Coming</th><th class="h2r${s}">${targetLabel()}</th><th class="h2r${s}">Invoice</th><th class="h2r${s}">%Inv/Coming</th><th class="h2r${s}">%Inv/Target</th>`;
+  const hd2 = groups.map(g => hd2row(X.p_group===g?' gsel':'')).join('') + hd2row();
+  const gp = pctOf(D.invoice.all, D.coming.all), gpT = pctOf(D.invoice.all, D.target.all);
+  const totFoot = `<td class="gb">${fvFull(D.coming.all)}</td><td>${fvFull(D.target.all)}</td><td>${fvFull(D.invoice.all)}</td><td class="${pcls(gp)}">${fp2(gp)}</td><td class="${pcls(gpT)}">${fp2(gpT)}</td>`;
+  $('#b3Table').innerHTML = `<table class="dt freeze-col"><thead><tr><th rowspan="2" class="l top">Date</th>${hd1}</tr><tr>${hd2}</tr></thead>
+    <tbody>${body || emptyRow(groups.length*span+span)}</tbody>${dates.length?`<tfoot><tr><td class="l">Total</td>${foot}${totFoot}</tr></tfoot>`:''}</table>`;
+  $('#b3Note').innerHTML = 'Target เป็นรายวัน (จันทร์–เสาร์) และเป็นข้อมูลชั่วคราว · "–" = ไม่มี Target';
+
+  // This chart specifically (Coming/Target/Invoice by P-Group) is pinned to MTD — same reasoning as Block 2:
+  // Target is inherently MTD, so Coming/Invoice must share that window too or the three bars wouldn't
+  // reconcile with each other. The Daily Detail table above (and its own Total row) is NOT touched — it keeps
+  // following the Filter Bar's Date range, which is that table's whole point.
+  const mtdOpt = {range: mtdRange()};
+  const chartCG = mapOf(agg('coming',['p_group'],ex,{...mtdOpt,b1:true}), ['p_group']);
+  const chartTG = mapOf(agg('target',['p_group'],ex,mtdOpt), ['p_group']);
+  const chartIG = mapOf(agg('invoice',['p_group'],ex,mtdOpt), ['p_group']);
+  const dimG = g => X.p_group && X.p_group!==g, ds = [{label:'Coming (MTD)', solid:C_COMING, data:groups.map(g => getv(chartCG,g,0)), backgroundColor:groups.map(g=>fade(C_COMING,dimG(g))), borderRadius:3}];
+  if(chartTG) ds.push({label:targetLabel(), solid:C_TARGET, data:groups.map(g => getv(chartTG,g,null)), backgroundColor:groups.map(g=>fade(C_TARGET,dimG(g))), borderRadius:3});
+  ds.push({label:'Invoice (MTD)', solid:C_INVOICE, data:groups.map(g => getv(chartIG,g,0)), backgroundColor:groups.map(g=>fade(C_INVOICE,dimG(g))), borderRadius:3});
+  mkChart('cB3Group', {type:'bar', data:{labels:groups, datasets:ds},
+    options:{plugins:{legend:legendOpts, tooltip:tipV, valueLabels:{show:true, fmt:fv}}, scales:{x:xAxis, y:{...yAxis, grace:'10%', ticks:{callback:v=>fv(v)}}}},
+    onPick: el => toggleX('p_group', groups[el.index])});
+
+  const dimD = d => X.date && X.date!==d;
+  mkChart('cB3Daily', {type:'bar', data:{labels:dates.map(d=>d.slice(5)), datasets:[
+      {label:'Coming', solid:C_COMING, data:dates.map(d=>getv(D.coming.d,d,0)), backgroundColor:dates.map(d=>fade(C_COMING,dimD(d))), borderRadius:2},
+      {label:'Invoice', solid:C_INVOICE, data:dates.map(d=>getv(D.invoice.d,d,0)), backgroundColor:dates.map(d=>fade(C_INVOICE,dimD(d))), borderRadius:2}]},
+    options:{plugins:{legend:legendOpts, tooltip:tipV}, scales:{x:{...xAxis, ticks:{maxRotation:0, autoSkip:true, font:{size:10}}}, y:{...yAxis, ticks:{callback:v=>fv(v)}}}},
+    onPick: el => toggleX('date', dates[el.index])});
+  LAST.dates = dates;
+}
+
+/* ---- Block 4 : invoice vs coming ----
+   Block 4 rules (fixed — always Case, never Sales/THB, see fc()/fp2() above):
+     - tbl_Invoice is never touched; every number here comes from tbl_Coming where Unit_Cal = 'Cal'
+       ({b4:true} in agg()/W() above adds that filter).
+     - No Sales_Order_Pool restriction (unlike Block 1's ET-FN/New/RM-CR scope) — every pool counts.
+     - Order_Status is the single status column (confirmed identical to "Line_Status").
+     - Counting unit is NOT the same across the 4 graphs/tables (decided in chat, after checking real data —
+       an Order_No can span several Coming lines, avg ~1.16 lines/Order in this data, and 65 Orders even span
+       more than one P-Group, though never more than one Site):
+         · Graph 1 (Coming vs Invoice by Site) and graph 2 (% Invoice/Coming Daily) = COUNT(DISTINCT order_no)
+           — distinct Orders. Safe to sum by Site (no Order spans 2 Sites), so graph 1's per-site cells still
+           add up exactly to its own Total.
+         · Graph 3 (Order Type by P-Group) and graph 4 (Order Status) = COUNT(*) — plain row/line count,
+           unchanged. (Switching these two to DISTINCT as well would make each P-Group row's own Total no
+           longer equal the plain sum of its cells, because ~65 Orders touch more than one P-Group — decided
+           to keep these two as line counts instead of introducing that mismatch.)
+       Consequence: graph 1's Coming/Invoice totals (distinct Orders) no longer equal graph 3's/graph 4's
+       Totals (line count) — they are intentionally different units now, not a bug. See the chat response for
+       the full before/after numbers.
+   Graph 1 "Coming" = status <> Canceled · "Invoice" = status = Invoiced.
+   Graph 2 denominator is the SAME Coming as graph 1's — see the comment above its query below.
+   P-Group is restricted to FIX/RPD/ORT/HTC dashboard-wide via W() / META.groups (see loadMeta()), so
+   visGroups() below already reflects that restriction — nothing Block-4-specific needed here anymore. */
+function renderB4(){
+  const groups = visGroups(), ex = ['site'], b4 = {b4:true}, b4d = {b4:true, distinct:true};
+  const mC = mapOf(agg('coming',['site'],ex,b4d), ['site']), mI = mapOf(agg('coming',['site'],ex,{...b4d,invoiced:true}), ['site']);
+  const names = new Set(); [mC, mI].forEach(m => m && m.forEach((v,k) => names.add(k)));
+  const sl = [...names].sort((a,b) => (getv(mC,b,0) ?? 0) - (getv(mC,a,0) ?? 0)), dimS = s => X.site && X.site!==s;
+  mkChart('cB4Site', {type:'bar', data:{labels:sl, datasets:[
+      {label:'Coming', solid:C_COMING, data:sl.map(s=>getv(mC,s,0)), backgroundColor:sl.map(s=>fade(C_COMING,dimS(s))), borderRadius:3},
+      {label:'Invoice', solid:C_INVOICE, data:sl.map(s=>getv(mI,s,0)), backgroundColor:sl.map(s=>fade(C_INVOICE,dimS(s))), borderRadius:3}]},
+    options:{plugins:{legend:legendOpts, tooltip:{callbacks:{label:c=>`${c.dataset.label}: ${fc(c.parsed.y)}`}}, valueLabels:{show:sl.length <= 8, fmt:fc}}, scales:{x:xAxis, y:{...yAxis, grace:'12%', ticks:{callback:v=>fc(v)}}}},
+    onPick: el => toggleX('site', sl[el.index])});
+
+  // Graph 2: numerator = Invoiced; denominator = Coming (Order_Status <> Canceled — Invoiced included), the
+  // SAME Coming definition graph 1's left-hand side uses, so both Block 4 graphs reference one Coming figure.
+  // (Previously the denominator excluded Invoiced too — Open order + Delivered only — which let the % exceed
+  // 100%; changed per the chat request so % Invoice/Coming is now bounded 0–100%.) Both sides count DISTINCT
+  // order_no (b4d), same as graph 1.
+  const tx = ['date','p_group'];
+  const dgI = mapOf(agg('coming',['date','p_group'],tx,{...b4d,invoiced:true}), ['date','p_group']);
+  const dgC = mapOf(agg('coming',['date','p_group'],tx,b4d), ['date','p_group']);
+  const dset = new Set(); if(dgI) dgI.forEach((v,k) => dset.add(k.split('|')[0])); if(dgC) dgC.forEach((v,k) => dset.add(k.split('|')[0]));
+  const dates = [...dset].sort();
+  const ds = groups.map(g => ({label:g, solid:gColor(g), data:dates.map(d => pctOf(getv(dgI,d+'|'+g,0), getv(dgC,d+'|'+g,0))),
+    borderColor:fade(gColor(g), X.p_group && X.p_group!==g), backgroundColor:gColor(g), borderWidth:2, tension:.25, spanGaps:true,
+    pointRadius:c => dates[c.dataIndex]===X.date ? 6 : 2.5, pointHoverRadius:6}));
+  mkChart('cB4Trend', {type:'line', data:{labels:dates.map(d=>d.slice(5)), datasets:ds},
+    options:{plugins:{legend:legendOpts, tooltip:{callbacks:{label:c=>`${c.dataset.label}: ${fp2(c.parsed.y)}`}}},
+      scales:{x:{...xAxis, ticks:{maxRotation:0, autoSkip:true, font:{size:10}}}, y:{...yAxis, beginAtZero:true, ticks:{callback:v=>v+'%'}}}},
+    onPick: el => toggleX('date', dates[el.index])});
+
+  // Coming vs Invoice by P-Group — Daily: per-P-Group cells reuse dgI/dgC from graph 2 above (same query).
+  // The Total column/row is NOT a sum of the 4 P-Group cells — ~65 Orders span more than one P-Group (see
+  // Block 4 header comment), so summing would double-count them. Total is instead its own COUNT(DISTINCT
+  // order_no) query with p_group excluded entirely, matching graph 1's (Coming vs Invoice by Site) true total.
+  const dpgTotC = mapOf(agg('coming',['date'],['date','p_group'],b4d), ['date']);
+  const dpgTotI = mapOf(agg('coming',['date'],['date','p_group'],{...b4d,invoiced:true}), ['date']);
+  const dpgColTot = (m,g) => sum(dates, d => getv(m,d+'|'+g,0));
+  const dpgHd1 = groups.map(g => `<th colspan="2" class="gb top clk${X.p_group===g?' gsel':''}" data-x="p_group" data-v="${esc(g)}" title="คลิกเพื่อกรองตาม P-Group ${esc(g)}"><span class="pgdot" style="background:${gColor(g)}"></span>${esc(g)}</th>`).join('') + `<th colspan="2" class="gb top">Total</th>`;
+  const dpgHd2 = groups.map(g => { const s = X.p_group===g?' gsel':''; return `<th class="h2r gb${s}">Coming</th><th class="h2r${s}">Invoice</th>`; }).join('') + `<th class="h2r gb">Coming</th><th class="h2r">Invoice</th>`;
+  const dpgBody = dates.map(d => {
+    const tds = groups.map(g => { const s = X.p_group===g ? ' gsel' : '';
+      return `<td class="gb${s}">${fc(getv(dgC,d+'|'+g,0))}</td><td class="${s}">${fc(getv(dgI,d+'|'+g,0))}</td>`; }).join('');
+    return `<tr class="clk${X.date===d?' sel':''}" data-x="date" data-v="${d}"><td class="l">${d}</td>${tds}<td class="gb"><b>${fc(getv(dpgTotC,d,0))}</b></td><td><b>${fc(getv(dpgTotI,d,0))}</b></td></tr>`; }).join('');
+  const dpgFoot = groups.map(g => `<td class="gb">${fc(dpgColTot(dgC,g))}</td><td>${fc(dpgColTot(dgI,g))}</td>`).join('');
+  const dpgGrandC = tot('coming', ['date','p_group'], b4d), dpgGrandI = tot('coming', ['date','p_group'], {...b4d,invoiced:true});
+  $('#b4DailyPG').innerHTML = `<table class="dt"><thead><tr><th rowspan="2" class="l top">Date</th>${dpgHd1}</tr><tr>${dpgHd2}</tr></thead>
+    <tbody>${dpgBody || emptyRow(groups.length*2+3)}</tbody>${dates.length?`<tfoot><tr><td class="l">Total</td>${dpgFoot}<td class="gb"><b>${fc(dpgGrandC)}</b></td><td><b>${fc(dpgGrandI)}</b></td></tr></tfoot>`:''}</table>`;
+
+  // Order Type (Sales_Order_Type — a separate real column, NOT the Sales_Order_Pool code) x P-Group (Coming,
+  // all types) — stays COUNT(*) (line count, not DISTINCT — per the chat request), so its own Total is always
+  // exactly Sum of the 4 P-Group rows; no longer equal to graph 1's Coming total though, since graph 1 counts
+  // DISTINCT Orders and this still counts lines (decided in chat — see comment above). noOt:true keeps this
+  // table's own scope independent of the Advanced Filter's "Sales Order Pool" chips (that filter is a
+  // different field, kept out of this table's own breakdown, same as before). Columns are no longer clickable
+  // (unlike the old Sales_Order_Pool version) — Sales_Order_Type values don't correspond to G.ot's Pool codes,
+  // so clicking a column could no longer set a meaningful Sales Order Pool filter.
+  const eo = ['p_group'], o = {...b4, noOt:true}, types = META.orderCategories;
+  const mGT = mapOf(agg('coming',['p_group','sales_order_type'],eo,o), ['p_group','sales_order_type']), mG = mapOf(agg('coming',['p_group'],eo,o), ['p_group']), mT = mapOf(agg('coming',['sales_order_type'],eo,o), ['sales_order_type']);
+  const allT = tot('coming', eo, o);
+  const hasBlank = !!(mT && mT.has(''));
+  const cols = hasBlank ? [...types, null] : types;
+  const body = groups.map(g => `<tr class="clk${X.p_group===g?' sel':''}" data-x="p_group" data-v="${esc(g)}"><td class="l"><span class="pgdot" style="background:${gColor(g)}"></span>${esc(g)}</td>${cols.map(t => `<td>${fc(getv(mGT, g+'|'+(t ?? ''), 0))}</td>`).join('')}<td><b>${fc(getv(mG,g,0))}</b></td></tr>`).join('');
+  const th = t => `<th>${lbl(t)}</th>`;
+  $('#b4So').innerHTML = mGT ? `<div class="tbl-wrap"><table class="dt"><thead><tr><th class="l">P-Group</th>${cols.map(th).join('')}<th>Total</th></tr></thead><tbody>${body||emptyRow(cols.length+2)}</tbody>
+    <tfoot><tr><td class="l">Total</td>${cols.map(t => `<td>${fc(getv(mT, t ?? '', 0))}</td>`).join('')}<td>${fc(allT)}</td></tr></tfoot></table></div>` : '<div class="note-line">–</div>';
+
+  // Order Status by P-Group, with Total row — stays COUNT(*) (line count), unchanged (decided in chat: not
+  // switched to DISTINCT, to avoid the ~65 multi-P-Group Orders breaking each row's own Total = Sum of cells)
+  const stG = mapOf(agg('coming',['p_group','order_status'],eo,{...b4,withCanceled:true}), ['p_group','order_status']);
+  const stat = [...STATUS_ORDER.filter(s => META.statuses.includes(s)), ...META.statuses.filter(s => !STATUS_ORDER.includes(s))];
+  const live = stat.filter(s => s !== 'Canceled');
+  const rowTot = g => sum(live, s => getv(stG, g+'|'+s, 0));
+  const stBody = groups.map(g => { const rt = rowTot(g);
+    return `<tr class="clk${X.p_group===g?' sel':''}" data-x="p_group" data-v="${esc(g)}"><td class="l"><span class="pgdot" style="background:${gColor(g)}"></span>${esc(g)}</td>${live.map(s => `<td>${fc(getv(stG, g+'|'+s, 0))}</td>`).join('')}<td><b>${fc(rt)}</b></td></tr>`; }).join('');
+  const stColTotals = live.map(s => sum(groups, g => getv(stG, g+'|'+s, 0)));
+  $('#b4Status').innerHTML = stG ? `<div class="tbl-wrap"><table class="dt"><thead><tr><th class="l">P-Group</th>${live.map(s=>`<th>${esc(s)}</th>`).join('')}<th>Total</th></tr></thead><tbody>${stBody||emptyRow(live.length+2)}</tbody>
+    <tfoot><tr><td class="l">Total</td>${stColTotals.map(v=>`<td>${fc(v)}</td>`).join('')}<td>${fc(sum(stColTotals,v=>v))}</td></tr></tfoot></table></div>` : '<div class="note-line">–</div>';
+}
+
+/* =====================================================================
+   Refresh
+   ===================================================================== */
+function refresh(){
+  try{
+    S.error = '';
+    syncControls(); renderActive(); renderBanner();
+    renderB1(); renderB2(); renderB3(); renderB4();
+    // a table currently expanded got its content (row count) replaced above — re-measure/re-scale it
+    if(typeof expandState !== 'undefined' && expandState && expandState.t.type !== 'chart') fitTableToModal(expandState.node);
+  }catch(e){ console.error(e); S.error = 'เกิดข้อผิดพลาดขณะประมวลผล: ' + e.message; renderBanner(); }
+}
+
+/* =====================================================================
+   Import (Excel workbook: sheets Coming / Invoice / Target) / SQLite
+   ===================================================================== */
+const showLoading = t => { $('#loadingText').textContent = t; $('#loading').classList.remove('hidden'); };
+const hideLoading = () => $('#loading').classList.add('hidden');
+const norm = s => String(s ?? '').toLowerCase().replace(/[^a-z0-9]/g, '');
+const clean = v => { const s = String(v ?? '').trim(); return (!s || s.toLowerCase() === '(blank)') ? null : s; };   // blanks are allowed and simply ignored
+const SHEET_SPEC = {
+  Coming:{ req:['date','site','p_group','order_no','order_status','coming_amount'], alias:{
+    date:['date'], site:['site'], p_group:['pgroup','productgroup'], subcategory:['subcategory','subcategory3'], channel:['channel'], account_id:['accountid'],
+    coming_name:['comingname','accountname','customername'], order_no:['orderno','salesorder','salesorderno'], order_status:['orderstatus','linestatus','status'],
+    sales_order_pool:['salesorderpool','pool'], sales_order_type:['salesordertype','ordertype'], unit_cal:['unitcal','unit'], coming_amount:['comingamount','amount'],
+    coming_count_sales_order:['comingcountsalesorder','countsalesorder','salesordercount']}},
+  Invoice:{ req:['date','site','p_group','order_no','invoice_amount'], alias:{
+    date:['date'], site:['site'], p_group:['pgroup','productgroup'], subcategory:['subcategory','subcategory3'], channel:['channel'], account_id:['accountid'],
+    invoicing_name:['invoicingname','accountname'], order_no:['orderno','invoiceno','salesorder'], unit_cal:['unitcal','unit'], invoice_amount:['invoiceamount','amount']}},
+  Target:{ req:['date','site','p_group','target_amount'], alias:{ date:['date'], site:['site'], p_group:['pgroup','productgroup'], target_amount:['targetamount','target'] }},
+};
+function toISODate(v){
+  if(v == null || v === '') return null;
+  if(v instanceof Date && !isNaN(v)) return v.toISOString().slice(0,10);
+  let s = String(v).trim(), mt;
+  if((mt = s.match(/^(\d{4})[-\/.](\d{1,2})[-\/.](\d{1,2})/))) return `${mt[1]}-${mt[2].padStart(2,'0')}-${mt[3].padStart(2,'0')}`;
+  if((mt = s.match(/^(\d{1,2})[-\/.](\d{1,2})[-\/.](\d{4})/))){ let y = +mt[3]; if(y > 2400) y -= 543; return `${y}-${mt[2].padStart(2,'0')}-${mt[1].padStart(2,'0')}`; }
+  if(/^\d{5}(\.\d+)?$/.test(s)) return new Date(Math.round((+s - 25569) * 864e5)).toISOString().slice(0,10);   // Excel serial (UTC-safe)
+  return null;
+}
+function numOf(v){ if(v == null || v === '') return {v:null}; if(typeof v === 'number') return {v}; const n = parseFloat(String(v).replace(/[,\s]/g,'')); return isNaN(n) ? {bad:true} : {v:n}; }
+const STATUS_MAP = {'invoiced':'Invoiced','open order':'Open order','open':'Open order','delivered':'Delivered','canceled':'Canceled','cancelled':'Canceled'};
+const poolOf = v => clean(v);   // Sales_Order_Pool is stored exactly as entered
+
+/* one sheet -> validated rows in table column order */
+function buildSheet(name, raw, ctx){
+  const spec = SHEET_SPEC[name];
+  if(!raw.length) throw new Error(`ชีต "${name}" ไม่มีข้อมูล`);
+  const headers = Object.keys(raw[0]).filter(h => !/^__EMPTY/.test(h)), map = {};
+  for(const [col, al] of Object.entries(spec.alias)){ const h = headers.find(h => al.includes(norm(h))); if(h) map[col] = h; }
+  const missing = spec.req.filter(c => !map[c]);
+  if(missing.length) throw new Error(`ชีต "${name}" ไม่พบคอลัมน์ที่จำเป็น: ${missing.join(', ')} (พบ: ${headers.join(', ')})`);
+  const errs = [], rows = []; let bad = 0, dropped = 0;
+  if(name === 'Target'){            // detect a sheet whose Site / P_Group columns are swapped (values in "Site" are P-Groups)
+    const known = new Set([...PG_ORDER, 'DS', 'IOS', 'ICHARM', 'TC']), smp = raw.slice(0, 300);
+    const share = k => smp.filter(r => known.has(String(r[map[k]] ?? '').trim().toUpperCase())).length / smp.length;
+    if(share('site') > .9 && share('p_group') < .1){ [map.site, map.p_group] = [map.p_group, map.site]; ctx.swapped = true; }
+  }
+  const bump = (r, why) => { bad++; if(errs.length < 30) errs.push(`${name}!แถว ${r}: ${why}`); };
+  raw.forEach((r, i) => {
+    const line = i + 2, date = toISODate(r[map.date]), site = clean(r[map.site]), pg = clean(r[map.p_group]);
+    if(name === 'Target' && pg && !PG_ORDER.includes(pg.toUpperCase())){ dropped++; return; }   // Target keeps only FIX / RPD / ORT / HTC
+    if(!date || !site || !pg){ return bump(line, !date ? `Date "${r[map.date]}" ไม่ใช่วันที่ที่ถูกต้อง` : !site ? 'Site ว่าง' : 'P_Group ว่าง'); }
+    const S_ = site.toUpperCase(), G_ = pg.toUpperCase();
+    if(name === 'Target'){
+      if(!PG_ORDER.includes(G_)){ dropped++; return; }                          // Target keeps only FIX / RPD / ORT / HTC
+      const a = numOf(r[map.target_amount]); if(a.bad || a.v == null || a.v < 0) return bump(line, `Target_Amount "${r[map.target_amount]}" ต้องเป็นตัวเลข ≥ 0`);
+      return rows.push([line, date, S_, G_, a.v]);
+    }
+    const amtKey = name === 'Coming' ? 'coming_amount' : 'invoice_amount', a = numOf(r[map[amtKey]]);
+    if(a.bad) return bump(line, `${amtKey} "${r[map[amtKey]]}" ไม่ใช่ตัวเลข`);       // negative / zero amounts are valid (discounts, credit notes)
+    const sub = clean(r[map.subcategory]); ctx.subCount.set(sub, (ctx.subCount.get(sub) || 0) + 1);
+    const base = [line, date, S_, G_, sub, clean(r[map.channel]), clean(r[map.account_id]), clean(r[map.coming_name ?? map.invoicing_name])];
+    if(name === 'Coming'){
+      const st = clean(r[map.order_status]); const stt = st ? (STATUS_MAP[st.toLowerCase()] || st) : null;
+      if(!stt) return bump(line, 'Order_Status ว่าง');
+      // Coming_Count_Sales_Order: lines-per-row multiplier for "Count by lines" metrics (SUM(...), not COUNT(*)
+      // of rows) — defaults to 1 (same as the old plain-row-count behaviour) when missing or not a valid number.
+      const cnt = numOf(r[map.coming_count_sales_order]), cntV = (!cnt.bad && cnt.v != null && cnt.v > 0) ? cnt.v : 1;
+      rows.push([...base, clean(r[map.order_no]), stt, poolOf(r[map.sales_order_pool]), clean(r[map.sales_order_type]), clean(r[map.unit_cal]), a.v ?? 0, cntV]);
+    }else{
+      rows.push([...base, clean(r[map.order_no]), clean(r[map.unit_cal]), a.v ?? 0]);
+    }
+  });
+  return {rows, errs, bad, dropped, hasPool: !!map.sales_order_pool, hasType: !!map.sales_order_type, hasCnt: !!map.coming_count_sales_order, hasUnit: !!map.unit_cal };
+}
+/* Subcategory: case-insensitive merge ("Product discount" == "Product Discount"), keeps the most frequent spelling */
+function mergeSubcats(tables, ctx){
+  const best = new Map();
+  for(const [s, n] of ctx.subCount){ if(s == null) continue; const k = s.toLowerCase(), b = best.get(k); if(!b || n > b.n) best.set(k, {s, n}); }
+  let merged = 0; for(const [s] of ctx.subCount){ if(s != null && best.get(s.toLowerCase()).s !== s) merged++; }
+  for(const rows of [tables.tbl_Coming, tables.tbl_Invoice]) for(const r of rows) if(r[4] != null) r[4] = best.get(r[4].toLowerCase()).s;
+  return merged;
+}
+async function readWorkbook(file){
+  if(typeof XLSX === 'undefined') throw new Error('ไม่สามารถโหลดไลบรารี SheetJS (xlsx) จาก CDN ได้ — ตรวจสอบอินเทอร์เน็ต');
+  showLoading(`กำลังอ่านไฟล์ ${file.name} (${(file.size/1048576).toFixed(1)} MB)…`); await tick();
+  const buf = await file.arrayBuffer();
+  const wb = XLSX.read(new Uint8Array(buf), {type:'array', dense:true, cellDates:false, cellStyles:false, cellNF:false, cellHTML:false});
+  const find = n => wb.SheetNames.find(s => norm(s).replace(/^tbl/,'') === n.toLowerCase());
+  const out = {};
+  for(const n of ['Coming','Invoice','Target']){
+    const sn = find(n); if(!sn) throw new Error(`ไม่พบชีต "${n}" (ชีตที่พบ: ${wb.SheetNames.join(', ')})`);
+    showLoading(`กำลังแปลงชีต ${n}…`); await tick();
+    out[n] = XLSX.utils.sheet_to_json(wb.Sheets[sn], {defval:null, raw:true}); wb.Sheets[sn] = null;
+  }
+  return out;
+}
+async function importWorkbook(file){
+  const raw = await readWorkbook(file), ctx = {subCount:new Map()}, warnings = [], res = {};
+  for(const n of ['Coming','Invoice','Target']){ showLoading(`ตรวจสอบข้อมูลชีต ${n} (${fmt(raw[n].length)} แถว)…`); await tick(); res[n] = buildSheet(n, raw[n], ctx); raw[n] = null; }
+  const tables = {tbl_Coming: res.Coming.rows, tbl_Invoice: res.Invoice.rows, tbl_Target: res.Target.rows};
+  const merged = mergeSubcats(tables, ctx);
+  for(const n of ['Coming','Invoice','Target']){ const r = res[n]; if(r.bad) warnings.push(`${n}: ข้าม ${fmt(r.bad)} แถวที่ไม่ผ่านการตรวจ`); warnings.push(...r.errs); }
+  if(ctx.swapped) warnings.push('Target: ค่าในคอลัมน์ Site และ P_Group สลับกัน — สลับกลับให้อัตโนมัติ (ควรแก้ในไฟล์ Excel ต้นทาง)');
+  if(res.Target.dropped) warnings.push(`Target: ตัด ${fmt(res.Target.dropped)} แถวของ P_Group นอก FIX / RPD / ORT / HTC`);
+  if(merged) warnings.push(`Subcategory: รวมชื่อที่ต่างเฉพาะตัวพิมพ์เล็ก/ใหญ่ ${fmt(merged)} ชื่อ`);
+  for(const n of ['Coming','Invoice']) if(!res[n].hasUnit) warnings.push(`${n}: ไม่พบคอลัมน์ Unit_Cal — Block 4 (Invoice vs Coming) ต้องใช้ Unit_Cal = "Cal" จึงจะไม่มีแถวใดตรงเงื่อนไขเลย`);
+  if(!res.Coming.hasType) warnings.push('Coming: ไม่พบคอลัมน์ Sales Order Type — ตาราง "Order Type by P-Group" ใน Block 4 จะว่างเปล่า (คอลัมน์นี้แยกจาก Sales_Order_Pool ต้องมีหัวคอลัมน์ "Sales Order Type" หรือ "Order Type" ในชีต Coming)');
+  if(!res.Coming.hasCnt) warnings.push('Coming: ไม่พบคอลัมน์ Coming_Count_Sales_Order — เมตริก "Count by lines" (Order Type by P-Group, Order Status) จะนับเป็น 1 ต่อแถวแทน (เหมือนพฤติกรรมเดิมก่อนมีคอลัมน์นี้)');
+  // P-Group is restricted to FIX/RPD/ORT/HTC dashboard-wide (Global Filter Bar, every Block/query) — rows
+  // outside that set are still written to SQLite as imported (nothing is dropped here, unlike Target below),
+  // but never surfaced anywhere on the dashboard, so flag them so it's not a silent loss of visibility.
+  for(const n of ['Coming','Invoice']){
+    const extra = res[n].rows.filter(r => !PG_ORDER.includes(r[3]));
+    if(extra.length) warnings.push(`${n}: ${fmt(extra.length)} แถวมี P_Group นอก FIX/RPD/ORT/HTC (${[...new Set(extra.map(r=>r[3]))].join(', ')}) — ยังบันทึกไว้ใน SQLite แต่จะไม่แสดงในหน้า Dashboard เลย (ไม่มีปุ่ม Filter ให้เลือกกลุ่มเหล่านี้)`);
+  }
+  if(!res.Coming.rows.length || !res.Invoice.rows.length) throw new Error('ไม่มีแถวที่ใช้งานได้ในชีต Coming หรือ Invoice');
+  showLoading('กำลังบันทึกลง SQLite…'); await tick();
+  DB.exec(SCHEMA);
+  await insertAll(tables, t => showLoading(t));
+  DB.exec(INDEXES);
+  setMeta('source','import'); setMeta('file_name', file.name); setMeta('schema_version','8'); setMeta('imported_at', new Date().toISOString());
+  S.source = 'import'; S.srcName = file.name; S.warnings = warnings;
+  afterDataChange();
+}
+function importSqliteFile(bytes, name){
+  const tmp = new SQL.Database(bytes);
+  try{
+    const has = t => tmp.exec(`SELECT name FROM sqlite_master WHERE type='table' AND name='${t}'`).length > 0;
+    const miss = ['tbl_Coming','tbl_Invoice','tbl_Target'].filter(t => !has(t));
+    const ver = has('meta') ? +(tmp.exec("SELECT value FROM meta WHERE key='schema_version'")[0]?.values[0][0] ?? 0) : 0;
+    if(!miss.length && ver < 8) throw new Error('ไฟล์ SQLite เป็นเวอร์ชันเก่า (ยังไม่มีคอลัมน์ coming_count_sales_order ใน tbl_Coming) — ให้ Import ไฟล์ Excel ใหม่ หรือสร้าง .sqlite ใหม่');
+    if(miss.length) throw new Error('ไฟล์ SQLite ไม่ใช่ Schema ปัจจุบัน (ไม่พบตาราง ' + miss.join(', ') + ') — ให้ Import ไฟล์ Excel ใหม่');
+    DB.close(); DB = tmp;
+    if(!has('meta')) DB.exec('CREATE TABLE meta(key TEXT PRIMARY KEY, value TEXT)');
+    S.source = 'import'; S.srcName = name; S.warnings = []; afterDataChange();
+  }catch(e){ tmp.close(); throw e; }
+}
+function afterDataChange(){ loadMeta(); resetGlobal(); clearX(); refresh(); }
+
+let importing = false;
+async function handleFile(file){
+  if(importing){ S.error = 'กำลังนำเข้าไฟล์อื่นอยู่ — รอให้เสร็จก่อน'; renderBanner(); return; }
+  importing = true;
+  try{
+    const ext = file.name.split('.').pop().toLowerCase();
+    if(['db','sqlite','sqlite3'].includes(ext)){ showLoading('กำลังเปิดไฟล์ SQLite…'); await tick(); importSqliteFile(new Uint8Array(await file.arrayBuffer()), file.name); }
+    else if(['xlsx','xls'].includes(ext)) await importWorkbook(file);
+    else throw new Error(`ไม่รองรับไฟล์ .${ext} — รองรับ .xlsx, .xls (3 ชีต: Coming / Invoice / Target) และ .sqlite / .db`);
+  }catch(e){ console.error(e); S.error = 'นำเข้าไม่สำเร็จ: ' + e.message; renderBanner(); }
+  finally{ importing = false; hideLoading(); }
+}
+function downloadBlob(data, name, type){
+  const url = URL.createObjectURL(new Blob([data], {type})); const a = document.createElement('a');
+  a.href = url; a.download = name; document.body.appendChild(a); a.click(); a.remove(); setTimeout(() => URL.revokeObjectURL(url), 1500);
+}
+function downloadSqlite(){
+  try{ setMeta('exported_at', new Date().toISOString()); downloadBlob(DB.export(), 'production_quality.sqlite', 'application/x-sqlite3'); }
+  catch(e){ S.error = 'ดาวน์โหลด SQLite ไม่สำเร็จ: ' + e.message; renderBanner(); }
+}
+function downloadTemplate(){
+  if(typeof XLSX === 'undefined'){ S.error = 'ไม่สามารถโหลด SheetJS จาก CDN ได้'; renderBanner(); return; }
+  const wb = XLSX.utils.book_new(), add = (n, rows, widths) => { const ws = XLSX.utils.aoa_to_sheet(rows); if(widths) ws['!cols'] = widths.map(w => ({wch:w})); XLSX.utils.book_append_sheet(wb, ws, n); };
+  const readme = [
+    ['Production & Quality Report — Data Template (Blocks 1–4)'], [],
+    ['Sheet','Column','Type','Required','Used by','Note'],
+    ['Coming','Date','Date (YYYY-MM-DD)','Required','1,2,3,4','วันที่รับงาน'],
+    ['Coming','Site','Text','Required','1,2,3,4','Site = Branch'],
+    ['Coming','P_Group','Text','Required','1,2,3,4','Dashboard ทั้งหมด (Global Filter + ทุก Block) แสดงเฉพาะ FIX / RPD / ORT / HTC — ค่าอื่นยังบันทึกใน SQLite แต่ไม่ถูกใช้แสดงผล'],
+    ['Coming','Subcategory [3]','Text','Optional','Filter','ว่างได้'],
+    ['Coming','Channel','Text','Optional','Filter','ว่างได้'],
+    ['Coming','Account_ID','Text','Optional','—','ยังไม่ใช้ใน Block 1–4 (เก็บไว้ก่อน)'],
+    ['Coming','Coming_Name','Text','Optional','—','ยังไม่ใช้ใน Block 1–4 (เก็บไว้ก่อน)'],
+    ['Coming','Order_No','Text','Required','1,2,3,4','Block 4: กราฟ Coming vs Invoice by Site และ % Invoice/Coming Daily นับ COUNT(DISTINCT Order_No) — ตาราง Order Type by P-Group และ Order Status นับ COUNT(*) ของแถว (ไม่ DISTINCT)'],
+    ['Coming','Order_Status','Text (Invoiced / Open order / Delivered / Canceled)','Required','1,2,4','Canceled ไม่นับในยอด Coming · คอลัมน์เดียวกับที่บางระบบต้นทางเรียก "Line_Status" (ชื่อหัวคอลัมน์ Line_Status ยังนำเข้าได้ ไม่ต้องเปลี่ยนชื่อในไฟล์)'],
+    ['Coming','Sales_Order_Pool','Text (รหัสตามต้นทาง เช่น New / ET-FN / RM-CR)','Optional','1 (เฉพาะ ET-FN/New/RM-CR)','ใช้เฉพาะ Coming · เก็บค่าตามที่กรอก ไม่แปลงค่า · คนละคอลัมน์กับ Sales_Order_Type ด้านล่าง'],
+    ['Coming','Sales_Order_Type','Text (NEW / Try-in / Finish / Remake)','Optional','4','คอลัมน์แยกต่างหากจาก Sales_Order_Pool (หัวคอลัมน์ Excel จริง: "Sales Order Type") · Block 4 ตาราง "Order Type by P-Group" ใช้คอลัมน์นี้ (COUNT บรรทัด ไม่ DISTINCT) — ไม่ใช่ค่าที่แปลงมาจาก Sales_Order_Pool'],
+    ['Coming','Unit_Cal','Text','Required (สำหรับ Block 4)','4','Block 4 นับเฉพาะแถวที่ Unit_Cal = "Cal" · ไม่รวมเอกสารคืน (Order_No ขึ้นต้น SRDM/SROS) · หน่วยนับ (Order ไม่ซ้ำ vs บรรทัด) ต่างกันตามกราฟ ดู Order_No'],
+    ['Coming','Coming_Amount','Number (ติดลบได้)','Required','1,2,3,4','Sales (THB) — Block 1/2/3 ใช้หน่วยนี้เสมอ'],
+    ['Coming','Coming_Count_Sales_Order','Number ≥ 1','Optional (Default 1)','4','Block 4 เมตริก "Count by lines" (Order Type by P-Group, Order Status) = SUM คอลัมน์นี้ ไม่ใช่ COUNT(*) ของแถว · ไม่มีคอลัมน์นี้ = นับ 1 ต่อแถว (เหมือนพฤติกรรมเดิม)'],
+    ['Invoice','Date, Site, P_Group, Subcategory [3], Channel, Account_ID','เหมือน Coming','ดู Coming','1,2,3','Invoice ไม่มี Order_Status / Sales_Order_Pool · Block 4 ไม่ใช้ tbl_Invoice เลย'],
+    ['Invoice','Invoicing_Name','Text','Optional','—','ยังไม่ใช้ใน Block 1–4 (เก็บไว้ก่อน)'],
+    ['Invoice','Order_No','Text','Required','1,2,3','เก็บไว้อ้างอิง (ไม่ได้ใช้นับใน Block 1–3 ซึ่งเป็น Sales/THB ทั้งหมด)'],
+    ['Invoice','Unit_Cal','Text','Optional','—','ปัจจุบันยังไม่ถูกใช้ใน Block ใดเลย (Block 4 ใช้ Unit_Cal จาก Coming เท่านั้น, tbl_Invoice ไม่ถูกแตะเลยใน Block 4) — เก็บไว้ก่อน'],
+    ['Invoice','Invoice_Amount','Number (ติดลบได้)','Required','1,2,3','Sales (THB) = Production Output'],
+    ['Target','Date, Site, P_Group','เหมือน Coming','Required','1,2,3','เฉพาะ FIX / RPD / ORT / HTC'],
+    ['Target','Target_Amount','Number ≥ 0','Required','1,2,3','Sales (THB) เท่านั้น'],
+  ];
+  add('README', readme, [10, 34, 44, 10, 10, 46]);
+  add('Coming', [['Date','Site','P_Group','Subcategory [3]','Channel','Account_ID','Coming_Name','Order_No','Order_Status','Sales_Order_Pool','Sales_Order_Type','Unit_Cal','Coming_Amount','Coming_Count_Sales_Order'],
+    ['2026-09-01','BKK','FIX','Zircon','Non-Chain','AR000001','Sample Dental Clinic','SODM26-000001','Open order','New','NEW','Cal',4200.00,1]]);
+  add('Invoice', [['Date','Site','P_Group','Subcategory [3]','Channel','Account_ID','Invoicing_Name','Order_No','Unit_Cal','Invoice_Amount'],
+    ['2026-09-01','BKK','FIX','Zircon','Non-Chain','AR000001','Sample Dental Co., Ltd.','IVDM26-000001','Cal',4200.00]]);
+  add('Target', [['Date','Site','P_Group','Target_Amount'], ['2026-09-01','BKK','FIX',100000]]);
+  XLSX.writeFile(wb, 'Production_Quality_Template.xlsx');
+}
+
+/* =====================================================================
+   Events
+   ===================================================================== */
+document.addEventListener('click', e => {
+  if(!e.target.closest('.adv-wrap')){ $('#advPanel').classList.add('hidden'); $('#btnAdv').setAttribute('aria-expanded','false'); }
+  if(e.target.closest('#btnAdv')){ const p = $('#advPanel'); p.classList.toggle('hidden'); $('#btnAdv').setAttribute('aria-expanded', String(!p.classList.contains('hidden'))); return; }
+  const clr = e.target.closest('[data-clear]');
+  if(clr){ if(clr.dataset.clear==='all') clearX(); else X[clr.dataset.clear] = ''; refresh(); return; }
+  const cg = e.target.closest('[data-cg]'); if(cg){ const k = cg.dataset.cg; if(k==='ot') G.ot.clear(); else G[k] = ''; refresh(); return; }
+  const ot = e.target.closest('[data-ot]');
+  if(ot){ const k = ot.dataset.ot; if(!k) G.ot.clear(); else G.ot.has(k) ? G.ot.delete(k) : G.ot.add(k); refresh(); return; }
+  const gp = e.target.closest('[data-gpg]');
+  if(gp){ const g = gp.dataset.gpg; if(!g) G.pg.clear(); else G.pg.has(g) ? G.pg.delete(g) : G.pg.add(g);
+    if(X.p_group && G.pg.size && !G.pg.has(X.p_group)) X.p_group=''; refresh(); return; }
+  const qk = e.target.closest('[data-q]');
+  if(qk){ G.to = META.max; G.from = qk.dataset.q==='ALL' ? META.min : qk.dataset.q==='MTD' ? META.max.slice(0,8)+'01' : addDays(META.max,-6);
+    if(G.from < META.min) G.from = META.min; refresh(); return; }
+  const act = e.target.closest('[data-act]');
+  if(act){ if(act.dataset.act==='dismiss'){ S.error=''; renderBanner(); } if(act.dataset.act==='restore'){ restoreMock(); } return; }
+  const el = e.target.closest('[data-x]'); if(el) toggleX(el.dataset.x, el.dataset.v);
+});
+document.addEventListener('change', e => {
+  const t = e.target, setSite = v => { G.site = v; if(X.site && G.site && X.site!==G.site) X.site=''; };
+  if(t.id==='gSite' || t.classList.contains('bsel')){ setSite(t.value); refresh(); }
+  else if(t.id==='gSub'){ G.sub = t.value; refresh(); }
+  else if(t.id==='gChannel'){ G.channel = t.value; refresh(); }
+  else if(t.id==='gFrom' || t.id==='gTo'){
+    if(t.id==='gFrom') G.from = t.value || META.min; else G.to = t.value || META.max;
+    if(G.from > G.to){ [G.from, G.to] = [G.to, G.from]; } refresh(); }
+});
+async function restoreMock(){ showLoading('กำลังสร้างข้อมูลตัวอย่าง…'); await tick(); await seedMock(); afterDataChange(); hideLoading(); }
+$('#btnReset').onclick = () => { resetGlobal(); clearX(); refresh(); };
+$('#btnImport').onclick = () => $('#fileIn').click();
+$('#fileIn').onchange = e => { const f = e.target.files[0]; if(f) handleFile(f); e.target.value=''; };
+$('#btnDownload').onclick = downloadSqlite;
+$('#btnTemplate').onclick = downloadTemplate;
+let dragDepth = 0;
+addEventListener('dragenter', e => { if(e.dataTransfer && [...e.dataTransfer.types].includes('Files')){ dragDepth++; $('#dropzone').classList.add('on'); } });
+addEventListener('dragleave', () => { if(--dragDepth<=0){ dragDepth=0; $('#dropzone').classList.remove('on'); } });
+addEventListener('dragover', e => e.preventDefault());
+addEventListener('drop', e => { e.preventDefault(); dragDepth=0; $('#dropzone').classList.remove('on'); const f = e.dataTransfer.files[0]; if(f && DB) handleFile(f); });
+
+/* =====================================================================
+   Expand-to-fullscreen — every chart/table across Blocks 1-4 (Block 1 has
+   neither, so nothing to attach there). Reparents the actual live DOM node
+   (canvas's .chart-wrap, or the table container) into the modal and back —
+   not a clone/rebuild — so the exact same Chart.js instance / event-
+   delegated click-to-filter (cross-filter, freeze-col, everything) keeps
+   working unchanged whether the node is sitting in its panel or the modal.
+   ===================================================================== */
+const EXPAND_ICON = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M8 3H5a2 2 0 0 0-2 2v3"/><path d="M21 8V5a2 2 0 0 0-2-2h-3"/><path d="M3 16v3a2 2 0 0 0 2 2h3"/><path d="M16 21h3a2 2 0 0 0 2-2v-3"/></svg>';
+const EXPAND_TARGETS = [
+  {id:'cB2', type:'chart'}, {id:'b2Table', type:'table'},
+  {id:'cB3Group', type:'chart'}, {id:'cB3Daily', type:'chart'}, {id:'b3Table', type:'table'},
+  {id:'cB4Site', type:'chart'}, {id:'cB4Trend', type:'chart'}, {id:'b4DailyPG', type:'table'}, {id:'b4So', type:'table'}, {id:'b4Status', type:'table'},
+];
+let expandState = null;
+const expandTargetNode = t => { const el = document.getElementById(t.id); return el && t.type==='chart' ? el.parentElement : el; };
+/* If a reparented table's natural content is shorter than the space the modal gives it, grow font-size +
+   cell padding together (via the --efs custom property, see .expand-scaled above) until it fills that space
+   — instead of leaving blank space below a short table. Left alone (no class added) once the table already
+   needs its own scrollbar (rows don't fit even at 1x) — freeze-col / sticky headers stay exactly as they are,
+   since this never uses transform. */
+function fitTableToModal(node){
+  const wrap = node.classList.contains('tbl-wrap') ? node : (node.querySelector('.tbl-wrap') || node);
+  const table = wrap.querySelector('table'); if(!table) return;
+  table.classList.remove('expand-scaled'); table.style.removeProperty('--efs'); wrap.classList.remove('expand-centered');
+  // setTimeout, not requestAnimationFrame — same reason as tick() elsewhere in this file: rAF callbacks never
+  // fire while the tab/pane is hidden or unfocused, which would silently skip this fit indefinitely.
+  setTimeout(() => {
+    // table.scrollHeight (not wrap.scrollHeight) — wrap is already flex-stretched to fill the modal by this
+    // point, so its own scrollHeight would just report that stretched size back; the *table's* own height
+    // still reflects its true, unstretched row content regardless of how tall its ancestor wrap now is.
+    const avail = wrap.clientHeight, natural = table.scrollHeight;
+    if(!avail || !natural || natural >= avail) return;
+    const scale = Math.min(2.4, avail / natural * 0.94);
+    if(scale > 1.03){ table.classList.add('expand-scaled'); table.style.setProperty('--efs', scale.toFixed(3)); }
+    // still shorter than the box even after the (capped) font growth above -> center the remainder, don't
+    // leave it pinned to the top with a dead gap below.
+    if(natural * scale < avail * 0.97) wrap.classList.add('expand-centered');
+  }, 30);
+}
+function openExpand(t){
+  if(expandState) return;
+  const node = expandTargetNode(t); if(!node) return;
+  const panel = node.closest('.panel');
+  expandState = {node, parent: node.parentElement, next: node.nextSibling, panel, t};
+  $('#expandSlot').appendChild(node);
+  if(panel) panel.classList.add('is-expanded');
+  $('#expandModal').classList.add('show');
+  document.body.style.overflow = 'hidden';
+  if(t.type==='chart') setTimeout(() => { CH[t.id] && CH[t.id].resize(); }, 30);
+  else fitTableToModal(node);
+}
+function closeExpand(){
+  if(!expandState) return;
+  const {node, parent, next, panel, t} = expandState;
+  parent.insertBefore(node, next);
+  if(panel) panel.classList.remove('is-expanded');
+  $('#expandModal').classList.remove('show');
+  document.body.style.overflow = '';
+  if(t.type!=='chart'){ const wrap = node.classList.contains('tbl-wrap') ? node : (node.querySelector('.tbl-wrap') || node); wrap.classList.remove('expand-centered'); const table = wrap.querySelector('table'); if(table){ table.classList.remove('expand-scaled'); table.style.removeProperty('--efs'); } }
+  expandState = null;
+  if(t.type==='chart') setTimeout(() => { CH[t.id] && CH[t.id].resize(); }, 30);
+}
+function initExpand(){
+  EXPAND_TARGETS.forEach(t => {
+    const node = expandTargetNode(t); if(!node) return;
+    const panel = node.closest('.panel'); if(!panel) return;
+    const btn = document.createElement('button');
+    btn.type = 'button'; btn.className = 'expand-btn'; btn.title = 'ขยายเต็มจอ';
+    btn.innerHTML = EXPAND_ICON;
+    btn.addEventListener('click', () => openExpand(t));
+    panel.appendChild(btn);
+  });
+  $('#expandCloseBtn').addEventListener('click', closeExpand);
+  $('#expandModal').addEventListener('click', e => { if(e.target.id === 'expandModal') closeExpand(); });
+  document.addEventListener('keydown', e => { if(e.key === 'Escape' && expandState) closeExpand(); });
+}
+
+/* =====================================================================
+   Boot
+   ===================================================================== */
+(async function boot(){
+  try{
+    showLoading('กำลังโหลด sql.js (SQLite / WebAssembly)…');
+    if(typeof initSqlJs==='undefined') throw new Error('โหลด sql.js จาก CDN ไม่สำเร็จ — ต้องเชื่อมต่ออินเทอร์เน็ตเพื่อเปิด Dashboard นี้');
+    SQL = await initSqlJs({locateFile: f => 'https://cdn.jsdelivr.net/npm/sql.js@1.10.3/dist/' + f});
+    DB = new SQL.Database();
+    await seedMock(); loadMeta(); resetGlobal();
+    hideLoading(); refresh(); initExpand();
+  }catch(e){
+    console.error(e);
+    $('#loading').classList.remove('hidden');
+    $('#loading').innerHTML = `<div style="text-align:center;max-width:460px;line-height:1.7;color:#b91c1c">⚠ ${esc(e.message)}</div>`;
+  }
+})();
+</script>
+</body>
+</html>
